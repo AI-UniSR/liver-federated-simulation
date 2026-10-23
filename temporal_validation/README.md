@@ -114,7 +114,10 @@ az ml job download -n $STEP --output-name results --download-path out/temporal_o
 
 or `temporal_validation/azureml/run_pipeline.sh "<experiment>" ["run_a run_b"]` with
 `DOWNLOAD_DIR=...` to wait and download. Overrides: `--set inputs.bootstrap=200`,
-`--set inputs.run_names="central_gradient_nofs_basic"`, `--set inputs.ipcw_from=derivation`.
+`--set inputs.run_names="central_gradient_nofs_basic"`, `--set inputs.ipcw_from=derivation`,
+`--set inputs.source_nodes_version=v1` for experiments trained on the v1 nodes. `run_names`
+takes `all` or a list; never pass an empty string (Azure ML drops empty string inputs and the
+submission fails with "Assignment for parameter run_names is not specified").
 
 Caveats: the per-area rows use the corrected geography (data asset v2); models trained on v1
 nodes (Aug-6 and Oct-22 federated runs) have members that do not correspond to those areas.

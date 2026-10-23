@@ -25,8 +25,8 @@ inputs:
     description: Source MLflow experiment whose finished runs are scored
   run_names:
     type: string
-    default: ""
-    description: Optional space- or comma-separated parent run names; empty = all finished runs
+    default: all
+    description: Space- or comma-separated parent run names, or 'all' for every finished run (an empty string is dropped by Azure ML)
   source_nodes_version:
     type: string
     default: v2

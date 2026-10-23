@@ -561,6 +561,8 @@ def main():
     parents_all = parent_runs(client, exp.experiment_id)
     finished = [p for p in parents_all if p.info.status == "FINISHED"]
     wanted = [n.strip() for n in " ".join(args.run_names or []).replace(",", " ").split() if n.strip()]
+    if len(wanted) == 1 and wanted[0].lower() == "all":
+        wanted = []  # sentinel used by the Azure ML component (an empty string input is dropped by the service)
     if wanted:
         finished = [p for p in finished if run_name(p) in set(wanted)]
         unknown = sorted(set(wanted) - {run_name(p) for p in parents_all})

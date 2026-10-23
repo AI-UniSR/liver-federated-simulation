@@ -11,7 +11,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 RG="${AZURE_RESOURCE_GROUP:-1fe41577-4b8d-412a-3055-3a18d9df3ee7}"
 WS="${AZUREML_WORKSPACE_NAME:-1fe415774b8d412a30553a18d9df3ee7}"
 EXPERIMENT="${1:?source MLflow experiment name}"
-RUN_NAMES="${2:-}"
+RUN_NAMES="${2:-all}"   # 'all' = every finished run; an empty string would be dropped by Azure ML
 
 JOB_NAME=$(az ml job create -f "$HERE/pipeline.yml" -g "$RG" -w "$WS" \
   --set inputs.experiment_name="$EXPERIMENT" --set inputs.run_names="$RUN_NAMES" ${EXTRA_SET:-} \
