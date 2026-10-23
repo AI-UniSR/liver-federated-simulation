@@ -11,10 +11,12 @@ and computes, overall and per federated area:
 * integrated Brier score up to --ibs-horizon,
 * bootstrap percentile CIs (patient resampling) for Harrell C and IBS.
 
-The censoring distribution for the IPCW metrics (Uno C, AUC, Brier) is estimated on the
-pooled temporal cohort (--ipcw-from temporal, default), whose censoring mechanism is the
-one of the data being scored; --ipcw-from derivation uses the derivation cohort instead
-(sensitivity analysis).
+Metric conventions follow PRECISION-AI (5_validation/lib/survival_metrics.py, 9 Oct 2026):
+follow-up truncated at tau = min(--horizon-max, max derivation follow-up, max follow-up of the
+evaluated sample); the censoring distribution G(t) of the IPCW metrics (Uno C, AUC, Brier)
+is estimated in the evaluated sample itself (subset or bootstrap resample, --ipcw-from
+evaluated, default), the derivation cohort only sets the follow-up bound; --ipcw-from
+derivation is the sensitivity variant. AUC time points above tau are skipped.
 
 Derivation-side numbers are read from the same run: the best child's
 ``weighted_c-index_validation`` and the per-site cross-validation C-indexes in
@@ -148,49 +150,87 @@ def ensemble_weights(ens):
     return [1.0 / len(ens.model)] * len(ens.model)
 
 
-def metrics_block(y_train, event, time, risk, surv, grid, horizons, tau, ibs_h):
-    """Point estimates for one model on one subset. surv: n x len(grid)."""
-    from sksurv.metrics import (concordance_index_censored, concordance_index_ipcw,
-                                cumulative_dynamic_auc, integrated_brier_score)
+def truncate(y, horizon):
+    """Censor at horizon every patient followed beyond it (PRECISION-AI convention)."""
+    y = y.copy()
+    beyond = y["time"] > horizon
+    y["time"][beyond] = horizon
+    y["event"][beyond] = False
+    return y
+
+
+def evaluation_horizon(time, tau_max, max_train):
+    """tau = min(tau_max, max derivation follow-up, max follow-up of the evaluated sample)."""
+    return float(min(tau_max, max_train if max_train is not None else np.inf, float(np.max(time))))
+
+
+def ipcw_sample(y_eval, y_deriv, ipcw_from):
+    """Sample used to estimate the censoring distribution G(t) of the IPCW metrics."""
+    return y_deriv if (ipcw_from == "derivation" and y_deriv is not None) else y_eval
+
+
+def ibs_on_grid(y_g, y_eval, surv, grid, horizon, ibs_h, tmin):
+    """IBS = trapezoid of the Brier score over the grid points in (tmin, min(horizon, ibs_h)), divided by the span."""
+    from sksurv.metrics import integrated_brier_score
+    keep = (grid > tmin) & (grid < np.nextafter(horizon, 0)) & (grid <= ibs_h)
+    if keep.sum() < 2:
+        return np.nan
+    return float(integrated_brier_score(y_g, y_eval, surv[:, keep], grid[keep]))
+
+
+def metrics_block(y_deriv, max_train, event, time, risk, surv, grid, horizons, tau_max, ibs_h, ipcw_from):
+    """Point estimates for one model on one subset. surv: n x len(grid).
+
+    Conventions (same as PRECISION-AI 5_validation/lib/survival_metrics.py): follow-up truncated at
+    tau = min(tau_max, max derivation follow-up, max evaluated follow-up); G(t) of the IPCW metrics
+    estimated in the evaluated sample (default) or in the derivation cohort (--ipcw-from derivation);
+    AUC time points <= tau, a point equal to tau moved just below it.
+    """
+    from sksurv.metrics import concordance_index_censored, concordance_index_ipcw, cumulative_dynamic_auc
     out = {"n": int(len(time)), "events": int(np.sum(event))}
     ev = np.asarray(event).astype(bool)
-    y_test = structured(ev, time)
+    horizon = evaluation_horizon(time, tau_max, max_train)
+    out["tau"] = horizon
+    y_eval = truncate(structured(ev, time), horizon)
+    y_g = ipcw_sample(y_eval, y_deriv, ipcw_from)
+    gmax = np.nextafter(horizon, 0)
     try:
         out["harrell_c"] = float(concordance_index_censored(ev, time, risk)[0])
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         out["harrell_c"] = np.nan
     try:
-        out["uno_c"] = float(concordance_index_ipcw(y_train, y_test, risk, tau=tau)[0])
-    except Exception:  # noqa: BLE001
+        out["uno_c"] = float(concordance_index_ipcw(y_g, y_eval, risk, tau=horizon)[0])
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("Uno C failed (n=%d): %s", len(time), e)
         out["uno_c"] = np.nan
-    tmax = float(np.max(time))
-    hs = [h for h in horizons if h < tmax]
+    pairs = [(h, h if h < horizon else gmax) for h in horizons if h <= horizon]
     try:
-        aucs, _ = cumulative_dynamic_auc(y_train, y_test, risk, np.array(hs, dtype=float)) if hs else ([], None)
-        for h, a in zip(hs, aucs):
-            out[f"auc_{h:g}"] = float(a)
-    except Exception:  # noqa: BLE001
-        pass
+        if pairs:
+            aucs, mean_auc = cumulative_dynamic_auc(y_g, y_eval, risk, np.array([p[1] for p in pairs], dtype=float))
+            for (h, _), a in zip(pairs, aucs):
+                out[f"auc_{h:g}"] = float(a)
+            out["mean_auc"] = float(mean_auc)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("AUC failed (n=%d): %s", len(time), e)
     for h in horizons:
         out.setdefault(f"auc_{h:g}", np.nan)
+    out.setdefault("mean_auc", np.nan)
     try:
-        # sksurv requires every evaluation time inside [min, max) of the test follow-up
-        keep = (grid > float(np.min(time))) & (grid < tmax) & (grid <= ibs_h)
-        out[f"ibs_{ibs_h:g}"] = float(integrated_brier_score(y_train, y_test, surv[:, keep], grid[keep])) if keep.sum() >= 2 else np.nan
+        out[f"ibs_{ibs_h:g}"] = ibs_on_grid(y_g, y_eval, surv, grid, horizon, ibs_h, float(np.min(time)))
     except Exception as e:  # noqa: BLE001
-        LOGGER.warning("IBS failed (n=%d, events=%d, tmax=%.2f): %s", len(time), int(np.sum(event)), tmax, e)
+        LOGGER.warning("IBS failed (n=%d, events=%d, tau=%.2f): %s", len(time), int(np.sum(event)), horizon, e)
         out[f"ibs_{ibs_h:g}"] = np.nan
     return out
 
 
-def bootstrap_ci(y_train, event, time, risk, surv, grid, ibs_h, n_boot, seed, metrics=("harrell_c", "ibs")):
-    from sksurv.metrics import concordance_index_censored, integrated_brier_score
+def bootstrap_ci(y_deriv, max_train, event, time, risk, surv, grid, tau_max, ibs_h, ipcw_from, n_boot, seed,
+                 metrics=("harrell_c", "ibs")):
+    """Percentile CIs by patient resampling; G(t) re-estimated in each resample (or derivation)."""
+    from sksurv.metrics import concordance_index_censored
     rng = np.random.default_rng(seed)
     n = len(time)
     ev = np.asarray(event).astype(bool)
     vals = {m: [] for m in metrics}
-    tmax = float(np.max(time))
-    keep = (grid > float(np.min(time))) & (grid < tmax) & (grid <= ibs_h)
     for _ in range(n_boot):
         idx = rng.integers(0, n, n)
         if ev[idx].sum() < 2:
@@ -200,12 +240,13 @@ def bootstrap_ci(y_train, event, time, risk, surv, grid, ibs_h, n_boot, seed, me
                 vals["harrell_c"].append(concordance_index_censored(ev[idx], time[idx], risk[idx])[0])
             except Exception:  # noqa: BLE001
                 pass
-        if "ibs" in metrics and keep.sum() >= 2:
+        if "ibs" in metrics:
             try:
-                yt = structured(ev[idx], time[idx])
-                k = keep & (grid > float(np.min(time[idx]))) & (grid < float(np.max(time[idx])))
-                if k.sum() >= 2:
-                    vals["ibs"].append(integrated_brier_score(y_train, yt, surv[idx][:, k], grid[k]))
+                horizon = evaluation_horizon(time[idx], tau_max, max_train)
+                yt = truncate(structured(ev[idx], time[idx]), horizon)
+                v = ibs_on_grid(ipcw_sample(yt, y_deriv, ipcw_from), yt, surv[idx], grid, horizon, ibs_h, float(np.min(time[idx])))
+                if not np.isnan(v):
+                    vals["ibs"].append(v)
             except Exception:  # noqa: BLE001
                 pass
     out = {}
@@ -305,7 +346,7 @@ def summary_figure(summary: pd.DataFrame, path: Path):
 
 
 # ----------------------------------------------------------------------------- one run
-def score_run(mlflow, client, exp_id, parent, cohort, y_train, args, out_root: Path):
+def score_run(mlflow, client, exp_id, parent, cohort, y_deriv, max_train, args, out_root: Path):
     name = run_name(parent)
     best = best_child(client, exp_id, parent.info.run_id)
     if best is None:
@@ -384,9 +425,11 @@ def score_run(mlflow, client, exp_id, parent, cohort, y_train, args, out_root: P
     for sname, mask in subsets.items():
         for mname in ["global"] + member_names:
             r = {"run_name": name, "model": mname, "subset": sname}
-            r.update(metrics_block(y_train, event[mask], time[mask], risks[mname][mask], surv[mname][mask], grid, args.horizons, args.horizon_max, args.ibs_horizon))
+            r.update(metrics_block(y_deriv, max_train, event[mask], time[mask], risks[mname][mask], surv[mname][mask], grid,
+                                   args.horizons, args.horizon_max, args.ibs_horizon, args.ipcw_from))
             if args.bootstrap > 0:
-                r.update(bootstrap_ci(y_train, event[mask], time[mask], risks[mname][mask], surv[mname][mask], grid, args.ibs_horizon, args.bootstrap, args.seed))
+                r.update(bootstrap_ci(y_deriv, max_train, event[mask], time[mask], risks[mname][mask], surv[mname][mask], grid,
+                                      args.horizon_max, args.ibs_horizon, args.ipcw_from, args.bootstrap, args.seed))
             # derivation CV C-index of the same model on the same site ("central" site == pooled == "all");
             # per-site values are unweighted means over folds; the pooled global value is the run's
             # sample-weighted objective (weighted_c-index_validation of the best child)
@@ -425,14 +468,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--experiment-name", required=True)
     ap.add_argument("--cohort", required=True, help="prepared temporal cohort CSV (prepare_temporal_cohort.py)")
-    ap.add_argument("--derivation-csv", default=None, help="pooled derivation data (central/original/data.csv); needed for --ipcw-from derivation")
-    ap.add_argument("--ipcw-from", choices=["temporal", "derivation"], default="temporal",
-                    help="cohort used to estimate the censoring distribution of the IPCW metrics (Uno C, AUC, Brier)")
+    ap.add_argument("--derivation-csv", default=None, help="pooled derivation data (central/original/data.csv): sets the maximum follow-up for tau; "
+                    "required for --ipcw-from derivation")
+    ap.add_argument("--ipcw-from", choices=["evaluated", "derivation"], default="evaluated",
+                    help="sample used to estimate the censoring distribution of the IPCW metrics: the evaluated subset/resample "
+                         "(PRECISION-AI convention, default) or the derivation cohort (sensitivity)")
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--run-names", nargs="*", default=None, help="restrict to these parent run names")
-    ap.add_argument("--horizons", nargs="*", type=float, default=[6.0, 12.0])
-    ap.add_argument("--horizon-max", type=float, default=12.0, help="tau for Uno C and end of the survival grid")
-    ap.add_argument("--ibs-horizon", type=float, default=12.0)
+    ap.add_argument("--horizons", nargs="*", type=float, default=[6.0, 12.0, 18.0, 24.0], help="AUC time points (months); those above tau are skipped")
+    ap.add_argument("--horizon-max", type=float, default=24.0, help="clinical horizon: tau = min(this, max derivation follow-up, max evaluated follow-up)")
+    ap.add_argument("--ibs-horizon", type=float, default=12.0, help="upper end of the IBS integration window (months)")
     ap.add_argument("--bootstrap", type=int, default=500)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--min-subset", type=int, default=20, help="minimum patients for a per-area row")
@@ -446,18 +491,19 @@ def main():
     args.horizons = sorted(set(args.horizons))
     out_root = Path(args.output_dir); out_root.mkdir(parents=True, exist_ok=True)
     cohort = pd.read_csv(args.cohort)
-    y_temporal = structured(cohort["event"].astype(int).to_numpy(), cohort["tte"].to_numpy(float))
-    LOGGER.info("temporal cohort %d patients, %d events, median observed time %.1f months", len(cohort), int(cohort["event"].sum()), float(cohort["tte"].median()))
-    if args.ipcw_from == "derivation":
-        if not args.derivation_csv:
-            raise SystemExit("--ipcw-from derivation requires --derivation-csv")
+    LOGGER.info("temporal cohort %d patients, %d events, median observed time %.1f months, max %.1f",
+                len(cohort), int(cohort["event"].sum()), float(cohort["tte"].median()), float(cohort["tte"].max()))
+    y_deriv, max_train = None, None
+    if args.derivation_csv:
         deriv = pd.read_csv(args.derivation_csv)
-        y_ipcw = structured(pd.to_numeric(deriv["event"]).astype(int).to_numpy(), pd.to_numeric(deriv["tte"]).to_numpy())
-        LOGGER.info("IPCW censoring distribution from the derivation cohort (%d patients)", len(deriv))
-    else:
-        y_ipcw = y_temporal
-        LOGGER.info("IPCW censoring distribution from the pooled temporal cohort")
-    y_train = y_ipcw  # name kept for the scoring functions: 'survival_train' of sksurv = sample used for the censoring KM
+        y_deriv = structured(pd.to_numeric(deriv["event"]).astype(int).to_numpy(), pd.to_numeric(deriv["tte"]).to_numpy())
+        max_train = float(y_deriv["time"].max())
+        LOGGER.info("derivation cohort %d patients, max follow-up %.1f months", len(deriv), max_train)
+    elif args.ipcw_from == "derivation":
+        raise SystemExit("--ipcw-from derivation requires --derivation-csv")
+    LOGGER.info("IPCW censoring distribution from the %s; tau = min(%g, %s, max evaluated follow-up)",
+                "derivation cohort" if args.ipcw_from == "derivation" else "evaluated sample", args.horizon_max,
+                f"{max_train:.1f}" if max_train else "no derivation bound")
 
     mlflow, client = mlflow_client()
     exp = client.get_experiment_by_name(args.experiment_name)
@@ -472,7 +518,7 @@ def main():
     results, failures = [], {}
     for p in parents:
         try:
-            r = score_run(mlflow, client, exp.experiment_id, p, cohort, y_train, args, out_root)
+            r = score_run(mlflow, client, exp.experiment_id, p, cohort, y_deriv, max_train, args, out_root)
             if r:
                 results.append(r)
         except Exception as e:  # noqa: BLE001

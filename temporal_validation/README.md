@@ -40,13 +40,15 @@ For every parent run of an MLflow experiment with a `best_optuna_model` child:
 * downloads the logged pipeline (`imputer -> preprocessor -> SurvEnsModelWrapper`), reads the
   33-column signature, scores the cohort with the global model and with each ensemble member
   (one per federated node in node-name order; one member for central runs);
-* metrics overall and per federated area (`--min-subset` patients): Harrell C, Uno C
-  (IPCW, `--horizon-max` as tau), time-dependent AUC at `--horizons`, integrated Brier score
-  up to `--ibs-horizon` (window: first grid point above the subset's shortest follow-up to
-  the horizon), bootstrap percentile CIs (`--bootstrap` resamples; `*_ci_nboot` = replicates
-  actually used) for Harrell C and IBS. The censoring distribution of the IPCW metrics is
-  estimated on the pooled temporal cohort (`--ipcw-from temporal`, default); `--ipcw-from
-  derivation --derivation-csv central/original/data.csv` is the sensitivity variant;
+* metrics overall and per federated area (`--min-subset` patients): Harrell C, Uno C,
+  time-dependent AUC at `--horizons` (6/12/18/24, those above tau skipped) and mean AUC,
+  integrated Brier score up to `--ibs-horizon` (window: first grid point above the subset's
+  shortest follow-up to the horizon), bootstrap percentile CIs (`--bootstrap` resamples;
+  `*_ci_nboot` = replicates actually used) for Harrell C and IBS. Conventions are those of
+  PRECISION-AI (`5_validation/lib/survival_metrics.py`): follow-up truncated at
+  tau = min(`--horizon-max` 24, max derivation follow-up from `--derivation-csv`, max follow-up
+  of the evaluated sample), censoring distribution of the IPCW metrics estimated in the
+  evaluated sample or resample (`--ipcw-from evaluated`, default; `derivation` = sensitivity);
 * derivation side from the same run: best child `weighted_c-index_validation` (reported as
   the derivation value of the global model on `all`) and the per-site CV C-index matrix of
   `cross_site_validation_results.json` (unweighted mean over folds of the validation rows);
