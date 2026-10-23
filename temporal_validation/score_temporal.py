@@ -1,0 +1,537 @@
+"""Temporal validation of the SraceFed models of one MLflow experiment.
+
+For every parent run of the experiment that has a ``best_optuna_model`` child, the
+script downloads the logged sklearn pipeline (imputer -> preprocessor ->
+SurvEnsModelWrapper), scores the prepared temporal cohort with the global model
+and with each ensemble member (one per federated node, one for a central run),
+and computes, overall and per federated area:
+
+* Harrell C-index, Uno C-index (IPCW, tau = --horizon-max),
+* time-dependent AUC at the requested horizons,
+* integrated Brier score up to --ibs-horizon,
+* bootstrap percentile CIs (patient resampling) for Harrell C and IBS.
+
+The censoring distribution for the IPCW metrics (Uno C, AUC, Brier) is estimated on the
+pooled temporal cohort (--ipcw-from temporal, default), whose censoring mechanism is the
+one of the data being scored; --ipcw-from derivation uses the derivation cohort instead
+(sensitivity analysis).
+
+Derivation-side numbers are read from the same run: the best child's
+``weighted_c-index_validation`` and the per-site cross-validation C-indexes in
+``cross_site_validation_results.json`` (mean over folds of the validation rows).
+
+Everything is written under --output-dir (one folder per run + a summary) and, unless
+--no-mlflow, logged as ONE MLflow run of the experiment "Temporal Validation - <source
+experiment>" so that metrics, tables and figures can be downloaded in one go.
+
+The survival curves of the ensemble are recomputed from the members instead of calling the
+wrapper (the code bundled with round-1 models lacks the StepFunction import). The global
+curve replicates SurvivalEnsemble.__mean_step_functions exactly: every member is linearly
+interpolated (np.interp, left fill = first value, right fill = last value) on the union of
+all members' knots, the weighted mean is taken there, and the resulting step function is
+evaluated on the 0.5-month grid (right-continuous; 1.0 before the first knot, where the
+framework's StepFunction would raise). Member curves are evaluated as right-continuous step
+functions, which is how a single sksurv estimator is read.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import tempfile
+import traceback
+import warnings
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+warnings.filterwarnings("ignore")
+LOGGER = logging.getLogger("score_temporal")
+
+SUBSCRIPTION = os.getenv("AZURE_SUBSCRIPTION_ID", "ab211f7b-463f-4833-9605-d260e596a35a")
+RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP", "1fe41577-4b8d-412a-3055-3a18d9df3ee7")
+WORKSPACE = os.getenv("AZUREML_WORKSPACE_NAME", "1fe415774b8d412a30553a18d9df3ee7")
+AREAS = ["americas", "asia", "europe_non_italy", "italy_centre_south", "italy_north"]
+
+
+# ----------------------------------------------------------------------------- MLflow
+def mlflow_client():
+    import mlflow
+    from mlflow.tracking import MlflowClient
+    from azure.ai.ml import MLClient
+    from azure.identity import DefaultAzureCredential
+
+    ml = MLClient(DefaultAzureCredential(), SUBSCRIPTION, RESOURCE_GROUP, WORKSPACE)
+    uri = ml.workspaces.get(WORKSPACE).mlflow_tracking_uri
+    mlflow.set_tracking_uri(uri)
+    return mlflow, MlflowClient(tracking_uri=uri)
+
+
+def search_all(client, experiment_id, filter_string=""):
+    runs, token = [], None
+    while True:
+        page = client.search_runs([experiment_id], filter_string=filter_string, max_results=200, page_token=token)
+        runs.extend(page)
+        token = getattr(page, "token", None)
+        if not token:
+            return runs
+
+
+def run_name(r):
+    return r.data.tags.get("mlflow.runName", "")
+
+
+def parent_runs(client, experiment_id):
+    return [r for r in search_all(client, experiment_id) if "mlflow.parentRunId" not in r.data.tags]
+
+
+def best_child(client, experiment_id, parent_id):
+    kids = search_all(client, experiment_id, f"tags.mlflow.parentRunId = '{parent_id}'")
+    best = [k for k in kids if run_name(k) == "best_optuna_model"]
+    if not best:
+        return None
+    return sorted(best, key=lambda k: k.info.start_time or 0)[-1]
+
+
+# ----------------------------------------------------------------------------- survival helpers
+def structured(event, time):
+    from sksurv.util import Surv
+    return Surv.from_arrays(event=np.asarray(event).astype(bool), time=np.asarray(time, dtype=float))
+
+
+def eval_step_functions(sfs, grid):
+    """Evaluate a list of sksurv StepFunction on grid, constant beyond the last time, 1 before the first."""
+    out = np.empty((len(sfs), len(grid)))
+    for i, sf in enumerate(sfs):
+        x, y = np.asarray(sf.x, dtype=float), np.asarray(sf.y, dtype=float)
+        if len(x) == 0:
+            out[i] = 1.0
+            continue
+        # StepFunction is right-continuous: value of the last knot <= t; 1 before the first knot
+        idx = np.searchsorted(x, grid, side="right") - 1
+        out[i] = np.where(idx < 0, 1.0, y[np.clip(idx, 0, len(y) - 1)])
+    return out
+
+
+def ensemble_survival_framework_rule(member_sfs, weights, grid):
+    """Global survival on grid, replicating SurvivalEnsemble.__mean_step_functions.
+
+    member_sfs: list (per member) of lists (per patient) of sksurv StepFunction.
+    The framework evaluates each member at its own knots (= its y), extends it with np.interp
+    on the union of all knots (left fill = y[0], right fill = y[-1]), averages with the weights
+    and builds a StepFunction on the union of knots. Here that step function is evaluated on
+    grid (right-continuous), with 1.0 before the first knot.
+    """
+    knots = [np.asarray(sfs[0].x, dtype=float) for sfs in member_sfs]
+    all_x = np.unique(np.concatenate(knots))
+    n = len(member_sfs[0])
+    mean = np.zeros((n, len(all_x)))
+    for w, sfs, x in zip(weights, member_sfs, knots):
+        for i, sf in enumerate(sfs):
+            y = np.asarray(sf.y, dtype=float)
+            mean[i] += w * np.interp(all_x, x, y, right=y[-1])
+    idx = np.searchsorted(all_x, grid, side="right") - 1
+    out = np.where(idx[None, :] < 0, 1.0, mean[:, np.clip(idx, 0, len(all_x) - 1)])
+    return out
+
+
+def ensemble_weights(ens):
+    """Replicates SurvivalEnsemble._weight() without relying on the bundled code version."""
+    if getattr(ens, "weight", None):
+        return list(ens.weight)
+    if getattr(ens, "weighted_sample", False):
+        n = [x if x is not None else -1 for x in ens.n_sample]
+        tot = sum(n)
+        return [x / tot if tot > 0 else 0 for x in n]
+    return [1.0 / len(ens.model)] * len(ens.model)
+
+
+def metrics_block(y_train, event, time, risk, surv, grid, horizons, tau, ibs_h):
+    """Point estimates for one model on one subset. surv: n x len(grid)."""
+    from sksurv.metrics import (concordance_index_censored, concordance_index_ipcw,
+                                cumulative_dynamic_auc, integrated_brier_score)
+    out = {"n": int(len(time)), "events": int(np.sum(event))}
+    ev = np.asarray(event).astype(bool)
+    y_test = structured(ev, time)
+    try:
+        out["harrell_c"] = float(concordance_index_censored(ev, time, risk)[0])
+    except Exception as e:  # noqa: BLE001
+        out["harrell_c"] = np.nan
+    try:
+        out["uno_c"] = float(concordance_index_ipcw(y_train, y_test, risk, tau=tau)[0])
+    except Exception:  # noqa: BLE001
+        out["uno_c"] = np.nan
+    tmax = float(np.max(time))
+    hs = [h for h in horizons if h < tmax]
+    try:
+        aucs, _ = cumulative_dynamic_auc(y_train, y_test, risk, np.array(hs, dtype=float)) if hs else ([], None)
+        for h, a in zip(hs, aucs):
+            out[f"auc_{h:g}"] = float(a)
+    except Exception:  # noqa: BLE001
+        pass
+    for h in horizons:
+        out.setdefault(f"auc_{h:g}", np.nan)
+    try:
+        # sksurv requires every evaluation time inside [min, max) of the test follow-up
+        keep = (grid > float(np.min(time))) & (grid < tmax) & (grid <= ibs_h)
+        out[f"ibs_{ibs_h:g}"] = float(integrated_brier_score(y_train, y_test, surv[:, keep], grid[keep])) if keep.sum() >= 2 else np.nan
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("IBS failed (n=%d, events=%d, tmax=%.2f): %s", len(time), int(np.sum(event)), tmax, e)
+        out[f"ibs_{ibs_h:g}"] = np.nan
+    return out
+
+
+def bootstrap_ci(y_train, event, time, risk, surv, grid, ibs_h, n_boot, seed, metrics=("harrell_c", "ibs")):
+    from sksurv.metrics import concordance_index_censored, integrated_brier_score
+    rng = np.random.default_rng(seed)
+    n = len(time)
+    ev = np.asarray(event).astype(bool)
+    vals = {m: [] for m in metrics}
+    tmax = float(np.max(time))
+    keep = (grid > float(np.min(time))) & (grid < tmax) & (grid <= ibs_h)
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        if ev[idx].sum() < 2:
+            continue
+        if "harrell_c" in metrics:
+            try:
+                vals["harrell_c"].append(concordance_index_censored(ev[idx], time[idx], risk[idx])[0])
+            except Exception:  # noqa: BLE001
+                pass
+        if "ibs" in metrics and keep.sum() >= 2:
+            try:
+                yt = structured(ev[idx], time[idx])
+                k = keep & (grid > float(np.min(time[idx]))) & (grid < float(np.max(time[idx])))
+                if k.sum() >= 2:
+                    vals["ibs"].append(integrated_brier_score(y_train, yt, surv[idx][:, k], grid[k]))
+            except Exception:  # noqa: BLE001
+                pass
+    out = {}
+    for m, v in vals.items():
+        key = "harrell_c" if m == "harrell_c" else f"ibs_{ibs_h:g}"
+        out[f"{key}_ci_nboot"] = len(v)  # replicates actually used (others skipped: <2 events or metric failure)
+        if len(v) >= 10:
+            out[f"{key}_ci_low"], out[f"{key}_ci_high"] = (float(np.percentile(v, 2.5)), float(np.percentile(v, 97.5)))
+        else:
+            out[f"{key}_ci_low"], out[f"{key}_ci_high"] = (np.nan, np.nan)
+    return out
+
+
+# ----------------------------------------------------------------------------- derivation side
+def derivation_matrix(cross_site_json: Path) -> pd.DataFrame:
+    """Mean validation C-index over CV folds: rows = data site, columns = model."""
+    d = json.load(open(cross_site_json))
+    df = pd.DataFrame(d["data"], columns=d["columns"])
+    df = df[(df["metric"] == "c-index") & (df["data_set_portion"] == "validation") & (df["validation_fold"] >= 0)]
+    m = df.groupby(["site_name", "remote_model"])["value"].mean().unstack("remote_model")
+    m.index = [s.replace("data_", "") for s in m.index]
+    m.columns = [c.replace("model_", "").replace("global_model", "global") for c in m.columns]
+    return m
+
+
+# ----------------------------------------------------------------------------- figures
+def forest_figure(table: pd.DataFrame, run: str, path: Path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    def xerr(row):
+        lo, hi = row.get("harrell_c_ci_low", np.nan), row.get("harrell_c_ci_high", np.nan)
+        if pd.isna(lo) or pd.isna(hi):
+            return None
+        return [[row["harrell_c"] - lo], [hi - row["harrell_c"]]]
+
+    g = table[(table["model"] == "global")].set_index("subset")
+    subsets = ["all"] + [a for a in AREAS if a in g.index]
+    fig, ax = plt.subplots(figsize=(7, 0.6 * len(subsets) + 1.5))
+    y = np.arange(len(subsets))[::-1]
+    own_labelled = False
+    for i, s in enumerate(subsets):
+        r = g.loc[s]
+        ax.errorbar(r["harrell_c"], y[i], xerr=xerr(r), fmt="o", color="C0", capsize=3, label="global model" if i == 0 else None)
+        own = table[(table["subset"] == s) & (table["model"] == s)]
+        if len(own):
+            o = own.iloc[0]
+            ax.errorbar(o["harrell_c"], y[i] - 0.25, xerr=xerr(o), fmt="s", color="C1", capsize=3,
+                        label=None if own_labelled else "own node model")
+            own_labelled = True
+        ax.text(0.985, y[i] + 0.1, f"n={int(r['n'])}, ev={int(r['events'])}", va="center", ha="right", fontsize=8, transform=ax.get_yaxis_transform())
+    ax.axvline(0.5, color="grey", lw=0.8, ls="--")
+    ax.set_yticks(y); ax.set_yticklabels(subsets); ax.set_xlabel("Harrell C-index on the temporal cohort (95% bootstrap CI)")
+    ax.set_title(run); ax.set_xlim(0.35, 1.0); ax.set_ylim(-0.7, len(subsets) - 0.3)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=2, fontsize=8, frameon=False)
+    fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
+
+
+def km_risk_groups_figure(time, event, risk, run: str, path: Path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from sksurv.nonparametric import kaplan_meier_estimator
+
+    q = np.quantile(risk, [1 / 3, 2 / 3])
+    grp = np.digitize(risk, q)
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    for g_, name in enumerate(["low risk (T1)", "intermediate (T2)", "high risk (T3)"]):
+        m = grp == g_
+        if m.sum() < 5:
+            continue
+        t, s = kaplan_meier_estimator(np.asarray(event, bool)[m], np.asarray(time)[m])
+        ax.step(t, s, where="post", label=f"{name}, n={m.sum()}, ev={int(np.sum(event[m]))}")
+    ax.set_xlabel("months from CGI start"); ax.set_ylabel("overall survival"); ax.set_ylim(0, 1); ax.set_xlim(0, 24)
+    ax.set_title(f"{run}\ntemporal cohort by tertile of the global risk score", fontsize=10); ax.legend(fontsize=8)
+    fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
+
+
+def summary_figure(summary: pd.DataFrame, path: Path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    s = summary.sort_values("run_name")
+    fig, ax = plt.subplots(figsize=(8, 0.45 * len(s) + 1.5))
+    y = np.arange(len(s))[::-1]
+    ax.scatter(s["derivation_weighted_c"], y, marker="D", color="grey", label="derivation (CV, weighted)")
+    lo = s["temporal_harrell_c"] - s["temporal_harrell_c_ci_low"]
+    hi = s["temporal_harrell_c_ci_high"] - s["temporal_harrell_c"]
+    xerr = None if lo.isna().any() or hi.isna().any() else [lo, hi]
+    ax.errorbar(s["temporal_harrell_c"], y, xerr=xerr, fmt="o", color="C0", capsize=3, label="temporal cohort (95% CI)")
+    ax.set_yticks(y); ax.set_yticklabels(s["run_name"]); ax.axvline(0.5, color="grey", lw=0.8, ls="--")
+    ax.set_xlabel("C-index"); ax.set_xlim(0.45, 0.85); ax.set_ylim(-0.7, len(s) - 0.3)
+    ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.25 if len(s) < 4 else -0.12), ncol=2, frameon=False)
+    fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
+
+
+# ----------------------------------------------------------------------------- one run
+def score_run(mlflow, client, exp_id, parent, cohort, y_train, args, out_root: Path):
+    name = run_name(parent)
+    best = best_child(client, exp_id, parent.info.run_id)
+    if best is None:
+        LOGGER.warning("%s: no best_optuna_model child (aborted run), skipped", name)
+        return None
+    out = out_root / "runs" / name
+    (out / "figures").mkdir(parents=True, exist_ok=True)
+    local = mlflow.artifacts.download_artifacts(run_id=best.info.run_id, artifact_path="model", dst_path=str(out / "_model"))
+    pipe = mlflow.sklearn.load_model(local)
+    sig_cols = [c["name"] for c in json.loads(mlflow.models.Model.load(local).signature.inputs.to_json())]
+    missing = [c for c in sig_cols if c not in cohort.columns]
+    if missing:
+        raise RuntimeError(f"{name}: cohort lacks signature columns {missing}")
+    X = cohort[sig_cols].astype(float)
+    wrapper = pipe.named_steps["model"]
+    ens = wrapper.model
+    members = list(ens.model)
+    weights = ensemble_weights(ens)
+    feat_in = list(ens.feature_names_in_)
+
+    # derivation-side info
+    try:
+        cs = mlflow.artifacts.download_artifacts(run_id=best.info.run_id, artifact_path="cross_site_validation_results.json", dst_path=str(out / "_model"))
+        deriv = derivation_matrix(Path(cs))
+        deriv.to_csv(out / "derivation_cv_cindex_matrix.csv")
+        node_names = sorted(c for c in deriv.columns if c != "global")
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("%s: cross-site json not usable (%s)", name, e)
+        deriv, node_names = None, []
+    if len(node_names) != len(members):
+        node_names = ["central"] if len(members) == 1 else [f"member_{i}" for i in range(len(members))]
+    member_names = node_names  # ensemble members are ordered by node name (results sorted by client name)
+
+    # predictions
+    Xt = pipe[:-1].transform(X)
+    if not hasattr(Xt, "columns"):
+        Xt = pd.DataFrame(Xt, columns=feat_in)
+    Xt = Xt[feat_in]
+    risk_global = np.asarray(pipe.predict(X), dtype=float)
+    risks = {"global": risk_global}
+    grid = np.arange(0.5, args.horizon_max + 1e-9, 0.5)
+    surv = {}
+    member_sfs = []
+    for mname, m in zip(member_names, members):
+        risks[mname] = np.asarray(m.predict(Xt), dtype=float)
+        sfs = m.predict_survival_function(Xt)
+        member_sfs.append(sfs)
+        surv[mname] = eval_step_functions(sfs, grid)
+    surv["global"] = ensemble_survival_framework_rule(member_sfs, weights, grid)
+    if len(members) == 1:
+        risks = {"global": risk_global}
+        surv = {"global": surv["global"]}
+        member_names = []
+    # sanity: global risk == weighted mean of member risks
+    if member_names:
+        recon = np.tensordot(np.asarray(weights), np.stack([risks[m] for m in member_names]), axes=1)
+        if not np.allclose(recon, risk_global, atol=1e-6):
+            LOGGER.warning("%s: global risk differs from the weighted mean of member risks (max abs %.3g)", name, np.max(np.abs(recon - risk_global)))
+
+    pred = cohort[["patient_number", "sigla", "area_federata", "tte", "event"]].copy()
+    for k, v in risks.items():
+        pred[f"risk_{k}"] = v
+    for h in args.horizons:
+        j = int(np.argmin(np.abs(grid - h)))
+        pred[f"S{h:g}_global"] = surv["global"][:, j]
+    pred.to_csv(out / "predictions.csv", index=False)
+
+    # metrics
+    rows = []
+    time = cohort["tte"].to_numpy(float); event = cohort["event"].to_numpy(int)
+    subsets = {"all": np.ones(len(cohort), bool)}
+    for a in AREAS:
+        m = (cohort["area_federata"] == a).to_numpy()
+        if m.sum() >= args.min_subset:
+            subsets[a] = m
+    for sname, mask in subsets.items():
+        for mname in ["global"] + member_names:
+            r = {"run_name": name, "model": mname, "subset": sname}
+            r.update(metrics_block(y_train, event[mask], time[mask], risks[mname][mask], surv[mname][mask], grid, args.horizons, args.horizon_max, args.ibs_horizon))
+            if args.bootstrap > 0:
+                r.update(bootstrap_ci(y_train, event[mask], time[mask], risks[mname][mask], surv[mname][mask], grid, args.ibs_horizon, args.bootstrap, args.seed))
+            # derivation CV C-index of the same model on the same site ("central" site == pooled == "all");
+            # per-site values are unweighted means over folds; the pooled global value is the run's
+            # sample-weighted objective (weighted_c-index_validation of the best child)
+            dsite = "central" if (sname == "all" and deriv is not None and "central" in deriv.index) else sname
+            dmodel = "central" if (mname == "global" and deriv is not None and list(deriv.columns) == ["central", "global"]) else mname
+            if deriv is not None and dsite in deriv.index and dmodel in deriv.columns:
+                r["derivation_cv_cindex"] = float(deriv.loc[dsite, dmodel])
+            elif sname == "all" and mname == "global" and best.data.metrics.get("weighted_c-index_validation") is not None:
+                r["derivation_cv_cindex"] = float(best.data.metrics["weighted_c-index_validation"])
+            rows.append(r)
+    table = pd.DataFrame(rows)
+    table.to_csv(out / "temporal_metrics.csv", index=False)
+    table.pivot(index="subset", columns="model", values="harrell_c").to_csv(out / "temporal_harrell_c_matrix.csv")
+
+    info = {
+        "run_name": name, "parent_run_id": parent.info.run_id, "best_child_run_id": best.info.run_id,
+        "derivation_weighted_c": best.data.metrics.get("weighted_c-index_validation"),
+        "signature_columns": sig_cols, "members": [type(m).__name__ for m in members], "member_names": member_names,
+        "weights": weights, "n_sample": list(getattr(ens, "n_sample", [])), "params": parent.data.params,
+    }
+    json.dump(info, open(out / "model_info.json", "w"), indent=2)
+    try:
+        forest_figure(table, name, out / "figures" / f"forest_harrell_c_{name}.png")
+        km_risk_groups_figure(time, event, risk_global, name, out / "figures" / f"km_risk_tertiles_{name}.png")
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("%s: figure failed: %s", name, e)
+    g_all = table[(table["model"] == "global") & (table["subset"] == "all")].iloc[0]
+    LOGGER.info("%s: derivation C %.3f | temporal Harrell C %.3f [%.3f, %.3f], Uno C %.3f, IBS%g %.3f (n=%d, ev=%d)",
+                name, info["derivation_weighted_c"] or np.nan, g_all["harrell_c"], g_all.get("harrell_c_ci_low", np.nan), g_all.get("harrell_c_ci_high", np.nan),
+                g_all["uno_c"], args.ibs_horizon, g_all[f"ibs_{args.ibs_horizon:g}"], g_all["n"], g_all["events"])
+    return {"table": table, "info": info}
+
+
+# ----------------------------------------------------------------------------- main
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--experiment-name", required=True)
+    ap.add_argument("--cohort", required=True, help="prepared temporal cohort CSV (prepare_temporal_cohort.py)")
+    ap.add_argument("--derivation-csv", default=None, help="pooled derivation data (central/original/data.csv); needed for --ipcw-from derivation")
+    ap.add_argument("--ipcw-from", choices=["temporal", "derivation"], default="temporal",
+                    help="cohort used to estimate the censoring distribution of the IPCW metrics (Uno C, AUC, Brier)")
+    ap.add_argument("--output-dir", required=True)
+    ap.add_argument("--run-names", nargs="*", default=None, help="restrict to these parent run names")
+    ap.add_argument("--horizons", nargs="*", type=float, default=[6.0, 12.0])
+    ap.add_argument("--horizon-max", type=float, default=12.0, help="tau for Uno C and end of the survival grid")
+    ap.add_argument("--ibs-horizon", type=float, default=12.0)
+    ap.add_argument("--bootstrap", type=int, default=500)
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--min-subset", type=int, default=20, help="minimum patients for a per-area row")
+    ap.add_argument("--no-mlflow", action="store_true")
+    ap.add_argument("--mlflow-experiment", default=None)
+    args = ap.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    for noisy in ("azure", "azureml", "urllib3", "msal", "mlflow"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    args.horizons = sorted(set(args.horizons))
+    out_root = Path(args.output_dir); out_root.mkdir(parents=True, exist_ok=True)
+    cohort = pd.read_csv(args.cohort)
+    y_temporal = structured(cohort["event"].astype(int).to_numpy(), cohort["tte"].to_numpy(float))
+    LOGGER.info("temporal cohort %d patients, %d events, median observed time %.1f months", len(cohort), int(cohort["event"].sum()), float(cohort["tte"].median()))
+    if args.ipcw_from == "derivation":
+        if not args.derivation_csv:
+            raise SystemExit("--ipcw-from derivation requires --derivation-csv")
+        deriv = pd.read_csv(args.derivation_csv)
+        y_ipcw = structured(pd.to_numeric(deriv["event"]).astype(int).to_numpy(), pd.to_numeric(deriv["tte"]).to_numpy())
+        LOGGER.info("IPCW censoring distribution from the derivation cohort (%d patients)", len(deriv))
+    else:
+        y_ipcw = y_temporal
+        LOGGER.info("IPCW censoring distribution from the pooled temporal cohort")
+    y_train = y_ipcw  # name kept for the scoring functions: 'survival_train' of sksurv = sample used for the censoring KM
+
+    mlflow, client = mlflow_client()
+    exp = client.get_experiment_by_name(args.experiment_name)
+    if exp is None:
+        raise SystemExit(f"experiment not found: {args.experiment_name}")
+    parents = parent_runs(client, exp.experiment_id)
+    if args.run_names:
+        parents = [p for p in parents if run_name(p) in set(args.run_names)]
+    parents = sorted(parents, key=run_name)
+    LOGGER.info("%d parent runs to score: %s", len(parents), [run_name(p) for p in parents])
+
+    results, failures = [], {}
+    for p in parents:
+        try:
+            r = score_run(mlflow, client, exp.experiment_id, p, cohort, y_train, args, out_root)
+            if r:
+                results.append(r)
+        except Exception as e:  # noqa: BLE001
+            failures[run_name(p)] = f"{e}\n{traceback.format_exc()}"
+            LOGGER.error("%s failed: %s", run_name(p), e)
+    if not results:
+        raise SystemExit("nothing scored")
+
+    # summary across runs
+    rows = []
+    for r in results:
+        t, info = r["table"], r["info"]
+        g = t[(t["model"] == "global") & (t["subset"] == "all")].iloc[0]
+        parts = info["run_name"].split("_")
+        row = {"run_name": info["run_name"], "arm": parts[0], "model": parts[1] if len(parts) > 1 else "", "fs": parts[2] if len(parts) > 2 else "",
+               "imputation": parts[3] if len(parts) > 3 else "", "derivation_weighted_c": info["derivation_weighted_c"],
+               "temporal_harrell_c": g["harrell_c"], "temporal_harrell_c_ci_low": g.get("harrell_c_ci_low", np.nan),
+               "temporal_harrell_c_ci_high": g.get("harrell_c_ci_high", np.nan), "temporal_uno_c": g["uno_c"]}
+        for h in args.horizons:
+            row[f"temporal_auc_{h:g}"] = g[f"auc_{h:g}"]
+        row[f"temporal_ibs_{args.ibs_horizon:g}"] = g[f"ibs_{args.ibs_horizon:g}"]
+        for a in AREAS:
+            ga = t[(t["model"] == "global") & (t["subset"] == a)]
+            row[f"temporal_c_{a}"] = ga["harrell_c"].values[0] if len(ga) else np.nan
+        rows.append(row)
+    summary = pd.DataFrame(rows).sort_values("run_name")
+    summary.to_csv(out_root / "summary_runs.csv", index=False)
+    pd.concat([r["table"] for r in results]).to_csv(out_root / "temporal_metrics_all_runs.csv", index=False)
+    try:
+        summary_figure(summary, out_root / "summary_derivation_vs_temporal.png")
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("summary figure failed: %s", e)
+    json.dump({"source_experiment": args.experiment_name, "args": vars(args), "failures": failures,
+               "cohort": {"n": int(len(cohort)), "events": int(cohort["event"].sum())}}, open(out_root / "run_info.json", "w"), indent=2)
+    LOGGER.info("\n%s", summary[["run_name", "derivation_weighted_c", "temporal_harrell_c", "temporal_harrell_c_ci_low", "temporal_harrell_c_ci_high", "temporal_uno_c", f"temporal_ibs_{args.ibs_horizon:g}"]].to_string(index=False))
+
+    if not args.no_mlflow:
+        exp_name = args.mlflow_experiment or f"Temporal Validation - {args.experiment_name}"
+        mlflow.set_experiment(exp_name)
+        with mlflow.start_run(run_name=f"temporal_validation_{len(results)}_runs") as run:
+            mlflow.log_params({"source_experiment": args.experiment_name, "n_runs_scored": len(results), "bootstrap": args.bootstrap, "ipcw_from": args.ipcw_from,
+                               "horizons": ",".join(f"{h:g}" for h in args.horizons), "horizon_max": args.horizon_max, "ibs_horizon": args.ibs_horizon,
+                               "cohort_n": int(len(cohort)), "cohort_events": int(cohort["event"].sum())})
+            for _, s in summary.iterrows():
+                key = s["run_name"]
+                mlflow.log_metric(f"harrell_c__{key}", float(s["temporal_harrell_c"]))
+                if pd.notna(s["temporal_uno_c"]):
+                    mlflow.log_metric(f"uno_c__{key}", float(s["temporal_uno_c"]))
+                v = s[f"temporal_ibs_{args.ibs_horizon:g}"]
+                if pd.notna(v):
+                    mlflow.log_metric(f"ibs{args.ibs_horizon:g}__{key}", float(v))
+            # log everything except the downloaded models
+            for p in out_root.rglob("*"):
+                if p.is_file() and "_model" not in p.parts:
+                    mlflow.log_artifact(str(p), artifact_path=str(p.parent.relative_to(out_root)) if p.parent != out_root else None)
+            LOGGER.info("logged to MLflow experiment %r run %s", exp_name, run.info.run_id)
+    if failures:
+        LOGGER.error("failed runs: %s", list(failures))
+
+
+if __name__ == "__main__":
+    main()

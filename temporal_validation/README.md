@@ -1,0 +1,82 @@
+# Temporal validation of the SraceFed liver models
+
+Two scripts, run on the Azure ML compute instance (the laptop cannot run Python) with the
+framework's Python shim (`Federated/.venv/bin/python`, same container as the experiments:
+scikit-survival 0.25, mlflow 2.22, azure-ai-ml, `DefaultAzureCredential` from the CLI login).
+
+## 1. `prepare_temporal_cohort.py`
+
+Builds the model-ready temporal cohort from the raw registry export (Azure ML data asset
+`file-validation-btc-csv`, the 22/01/2026 freeze with both cohorts) and the verified centre
+table `resources/centri_aree_federate.csv`:
+
+1. keep `coorte == validation`;
+2. sigla and federated area by exact match of the `center` string against
+   `varianti_nei_file` (the table lists every spelling found in the files);
+3. remove re-entries of training patients, matched on (dob, sex, center, cgi start date)
+   against the training rows of the same file, like the UseCase-Code validation pipeline;
+4. `tte` = (date of death or last fup - cgi start date) in days / (365.25/12); `event` = `death`;
+   drop missing or tte <= 0;
+5. the 33 model features with the derivation recipe (raw columns verbatim, `ps ecog` :=
+   `ecog bin`, `location - Intrahepatic` := location == 1).
+
+Expected result on the 22/01/2026 freeze: 779 validation rows, 80 duplicates, 1 zero follow-up,
+**698 usable patients, 251 events**; per area americas 46, asia 125, europe_non_italy 129,
+italy_centre_south 178, italy_north 220. `--anagrafica resources/anagrafica_pazienti_centri_aree.csv`
+cross-checks the usable set and the areas patient by patient.
+
+```
+python temporal_validation/prepare_temporal_cohort.py \
+  --raw-csv <file_btc_validazione_22012026.csv> \
+  --centre-table temporal_validation/resources/centri_aree_federate.csv \
+  --anagrafica temporal_validation/resources/anagrafica_pazienti_centri_aree.csv \
+  --output out/temporal_cohort_prepared.csv
+```
+
+## 2. `score_temporal.py`
+
+For every parent run of an MLflow experiment with a `best_optuna_model` child:
+
+* downloads the logged pipeline (`imputer -> preprocessor -> SurvEnsModelWrapper`), reads the
+  33-column signature, scores the cohort with the global model and with each ensemble member
+  (one per federated node in node-name order; one member for central runs);
+* metrics overall and per federated area (`--min-subset` patients): Harrell C, Uno C
+  (IPCW, `--horizon-max` as tau), time-dependent AUC at `--horizons`, integrated Brier score
+  up to `--ibs-horizon` (window: first grid point above the subset's shortest follow-up to
+  the horizon), bootstrap percentile CIs (`--bootstrap` resamples; `*_ci_nboot` = replicates
+  actually used) for Harrell C and IBS. The censoring distribution of the IPCW metrics is
+  estimated on the pooled temporal cohort (`--ipcw-from temporal`, default); `--ipcw-from
+  derivation --derivation-csv central/original/data.csv` is the sensitivity variant;
+* derivation side from the same run: best child `weighted_c-index_validation` (reported as
+  the derivation value of the global model on `all`) and the per-site CV C-index matrix of
+  `cross_site_validation_results.json` (unweighted mean over folds of the validation rows);
+* survival curves of the ensemble are recomputed from the members because the code bundled
+  with round-1 models cannot evaluate `predict_survival_function`: the global curve follows
+  the framework rule exactly (members linearly interpolated on the union of their knots,
+  weighted mean, step evaluation on a 0.5-month grid), member curves are read as
+  right-continuous step functions.
+
+Known coding shift surfaced by `prepare_temporal_cohort.py` (summary key
+`coding_differences_vs_training`): `stent or biliary draige` is 0/1/2/3 in the derivation rows
+and 0/1 in the validation rows of the registry; the models receive the validation coding as is.
+
+Outputs under `--output-dir`: `runs/<run>/temporal_metrics.csv` (long table: model x subset x
+metric, with CIs and the derivation CV value), `temporal_harrell_c_matrix.csv` (rows = subsets,
+columns = models), `derivation_cv_cindex_matrix.csv`, `predictions.csv` (risk per model and
+S(6), S(12) of the global model per patient), `model_info.json`, figures (forest plot of Harrell C
+per area, KM by tertile of the global risk); `summary_runs.csv` and
+`summary_derivation_vs_temporal.png` across runs. Unless `--no-mlflow`, everything is logged to
+one run of the MLflow experiment `Temporal Validation - <source experiment>`.
+
+```
+python temporal_validation/score_temporal.py \
+  --experiment-name "Federated Experiment October 23rd" \
+  --cohort out/temporal_cohort_prepared.csv \
+  --derivation-csv data/data_survival/central/original/data.csv \
+  --output-dir out/temporal_oct23 --bootstrap 500
+```
+
+Caveats: the per-area rows use the corrected geography (data asset v2); models trained on v1
+nodes (Aug-6 and Oct-22 federated runs) have members that do not correspond to those areas.
+Follow-up in the temporal cohort is short (median about 10 months), so horizons beyond 12
+months are not meaningful.

@@ -1,0 +1,56 @@
+sigla;varianti_nei_file;nome_completo;citta;paese;n_derivazione;n_validazione;area_federata;etichetta_registro_btc_mondiale
+arnld;arnld;Toronto General Hospital (University Health Network);Toronto;Canada;43;5;americas;TORONTO
+Mayo Clinic;Mayo Clinic;Mayo Clinic;Rochester;United States;28;41;americas;ROCHESTER(MINNESOTA)
+campus;campus;Policlinico Universitario Campus Bio-Medico;Rome;Italy;32;29;italy_centre_south;ROMA (CAMPUS)
+INT;INT;Istituto Nazionale Tumori;Milan;Italy;20;12;italy_north;MILANO (INT)
+INT-PASC;INT-PASC;INT Fondazione Pascale;Naples;Italy;8;5;italy_centre_south;NAPOLI (INT) | NAPOLI(INT)
+chan;chan;The Chinese University of Hong Kong;Hong Kong;China;5;0;asia;HONG KONG
+IPOC;IPOC;Instituto Portugues de Oncologia de Coimbra;Coimbra;Portugal;4;0;europe_non_italy;COIMBRA
+braconi;braconi;University of Glasgow (Beatson West of Scotland Cancer Centre);Glasgow;United Kingdom;16;20;europe_non_italy;GLASGOW
+CCC;CCC;Champalimaud Clinical Center;Lisbon;Portugal;13;11;europe_non_italy;LISBONA
+National Cancer Center Hospital East;National Cancer Center Hospital East,;National Cancer Center Hospital East;Kashiwa;Japan;39;58;asia;KASHIWA(GIAPPONE)
+SNUBH;SNUBH;Seoul National University Bundang Hospital;Seoul;Republic of Korea;30;24;asia;SEUL
+CHA;CHA uno dei due coreani|CHA Bundang Medical Center;CHA Bundang Medical Center;Seoul;Republic of Korea;17;23;asia;COREA DEL SUD
+changoon;changoon;Asan Medical Center;Seoul;Republic of Korea;15;0;asia;SEOUL (CHANGOON)
+Haeundae Paik Hospital;Haeundae Paik Hospital;Haeundae Paik Hospital (Inje University);Busan;Republic of Korea;7;13;asia;BUSAN(COREA DEL SUD)
+UZ Leuven;UZ Leuven;University Hospitals Leuven;Leuven;Belgium;38;0;europe_non_italy;LEUVEN(BELGIO)
+Frafurt;Frafurt;University Hospital Frankfurt;Frankfurt;Germany;22;0;europe_non_italy;FRANCOFORTE
+BCN;BCN;Vall d'Hebron Institute of Oncology;Barcelona;Spain;10;18;europe_non_italy;BARCELLONA
+wien;wien;Medical University of Vienna (AKH Wien);Vienna;Austria;9;0;europe_non_italy;VIENNA
+Ulm lukas;Ulm lukas;University Hospital Ulm;Ulm;Germany;7;15;europe_non_italy;ULM
+madrid;madrid;Hospital Universitario 12 de Octubre;Madrid;Spain;5;0;europe_non_italy;MADRID
+Faro;Faro, PT;Centro Hospitalar Universitario do Algarve;Faro;Portugal;4;0;europe_non_italy;FARO
+Guimaraes;Ana Rolo and Ilda Faustino;Hospital de Guimaraes;Guimaraes;Portugal;3;0;europe_non_italy;GUIMARAES(PORTOGALLO)
+CHULN;CHULN;Centro Hospitalar Universitario Lisboa Norte;Lisbon;Portugal;1;0;europe_non_italy;CHULN
+Portimao;Portimão,PT;Centro Hospitalar Universitario do Algarve;Portimao;Portugal;1;0;europe_non_italy;PORTIMAO
+UNIFG;UNIFG|UNIFG ;Ospedali Riuniti di Foggia (Universita di Foggia);Foggia;Italy;22;14;italy_centre_south;FOGGIA
+Tricase;Tricase;Ospedale Cardinale Panico;Tricase;Italy;15;16;italy_centre_south;TRICASE
+ancona;ancona;Ospedali Riuniti Ancona;Ancona;Italy;12;12;italy_centre_south;ANCONA
+cagliari;cagliari;Azienda Ospedaliero-Universitaria di Cagliari;Cagliari;Italy;10;0;italy_centre_south;CAGLIARI
+ospedale del mare;ospedale del mare;Ospedale del Mare;Naples;Italy;10;6;italy_centre_south;NAPOLI(OSPEDALE DEL MARE)
+Viterbo;Viterbo;Ospedale Belcolle;Viterbo;Italy;7;6;italy_centre_south;VITERBO
+Policlinico Umberto I Roma;Policlinico Umberto I Roma monica verrico;Policlinico Umberto I;Rome;Italy;5;17;italy_centre_south;ROMA(UMBERTO I)
+Aprilia;Aprilia;Casa di Cura Citta di Aprilia;Aprilia;Italy;3;2;italy_centre_south;APRILIA
+San Giovanni Rotondo;San Giovanni Rotondo|S, Giovanni;IRCCS Casa Sollievo della Sofferenza;San Giovanni Rotondo;Italy;2;13;italy_centre_south;SAN GIOVANNI ROTONDO
+LECCE;LECCE;Ospedale Vito Fazzi;Lecce;Italy;1;0;italy_centre_south;LECCE
+IOV;IOV;Istituto Oncologico Veneto;Padua;Italy;42;8;italy_north;PADOVA
+PISA;PISA;Azienda Ospedaliero-Universitaria Pisana;Pisa;Italy;41;0;italy_north;PISA
+Careggi;Careggi;Azienda Ospedaliero-Universitaria Careggi;Florence;Italy;40;20;italy_north;FIRENZE
+OSR;OSR|osr;Ospedale San Raffaele;Milan;Italy;33;71;italy_north;MILANO (OSR)
+ICH;ICH;Humanitas (Istituto Clinico Humanitas);Milan;Italy;32;15;italy_north;MILANO(ICH)
+IRST;IRST;IRST IRCCS;Meldola;Italy;24;15;italy_north;MELDOLA
+Ravenna;Ravenna;Ospedale Santa Maria delle Croci;Ravenna;Italy;23;7;italy_north;RAVENNA
+Ospedale San Martino - Genova;Ospedale San Martino - Genova chiara pirrone;Ospedale Policlinico San Martino;Genoa;Italy;16;0;italy_north;GENOVA
+Udine;Udine;ASUFC Udine;Udine;Italy;8;0;italy_north;UDINE
+Poliambulanza;Poliambulanza oneda ester;Fondazione Poliambulanza;Brescia;Italy;6;14;italy_north;BRESCIA
+PARMA;PARMA;Azienda Ospedaliero-Universitaria di Parma;Parma;Italy;3;13;italy_north;PARMA
+tor_vergata;tor_vergata;Policlinico Tor Vergata;Rome;Italy;0;38;italy_centre_south;
+Imperial;Imperial;Imperial College London;London;United Kingdom;0;27;europe_non_italy;
+Fundacion Jimenez Diaz;Fundación Jiménez Díaz Universitary Hospital;Fundacion Jimenez Diaz University Hospital;Madrid;Spain;0;22;europe_non_italy;
+candiolo;candiolo;Istituto di Candiolo IRCCS;Candiolo (Turin);Italy;0;20;italy_north;
+IFO;IFO;Istituti Fisioterapici Ospedalieri (Regina Elena);Rome;Italy;0;16;italy_centre_south;
+Madrid;Madrid;Hospital Universitario La Paz;Madrid;Spain;0;16;europe_non_italy;
+Policlinico San Matteo;Policlinico San Matteo, Pavia;Policlinico San Matteo;Pavia;Italy;0;16;italy_north;
+POLIMI;POLIMI;Policlinico di Milano (Fondazione IRCCS Ca' Granda Ospedale Maggiore Policlinico);Milan;Italy;0;9;italy_north;
+NCKUH;NCKUH;National Cheng Kung University Hospital;Tainan;Taiwan;0;7;asia;
+Policlinico Rodolico-San Marco;Policlinico rodolico-san marco;Policlinico Rodolico-San Marco;Catania;Italy;0;4;italy_centre_south;
