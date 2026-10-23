@@ -41,6 +41,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import tempfile
 import traceback
 import warnings
@@ -59,14 +60,39 @@ AREAS = ["americas", "asia", "europe_non_italy", "italy_centre_south", "italy_no
 
 
 # ----------------------------------------------------------------------------- MLflow
+def library_versions() -> dict:
+    """Versions of the libraries that determine unpickling and scoring (recorded for lineage)."""
+    from importlib.metadata import PackageNotFoundError, version
+    out = {}
+    for pkg in ["scikit-learn", "scikit-survival", "mlflow", "numpy", "pandas", "scipy"]:
+        try:
+            out[pkg] = version(pkg)
+        except PackageNotFoundError:
+            try:
+                out[pkg] = version(pkg + "-skinny")  # the experiment container ships mlflow-skinny
+            except PackageNotFoundError:
+                out[pkg] = "missing"
+    return out
+
+
+def in_azureml_job() -> bool:
+    """True when running inside an Azure ML job (tracking URI and run token are preset)."""
+    return bool(os.getenv("AZUREML_RUN_ID"))
+
+
 def mlflow_client():
+    """MLflow client on the workspace: the preset tracking URI inside an Azure ML job, the
+    workspace URI through azure-ai-ml and DefaultAzureCredential elsewhere (compute instance)."""
     import mlflow
     from mlflow.tracking import MlflowClient
-    from azure.ai.ml import MLClient
-    from azure.identity import DefaultAzureCredential
 
-    ml = MLClient(DefaultAzureCredential(), SUBSCRIPTION, RESOURCE_GROUP, WORKSPACE)
-    uri = ml.workspaces.get(WORKSPACE).mlflow_tracking_uri
+    uri = os.getenv("MLFLOW_TRACKING_URI")
+    if not uri or not in_azureml_job():
+        from azure.ai.ml import MLClient
+        from azure.identity import DefaultAzureCredential
+
+        ml = MLClient(DefaultAzureCredential(), SUBSCRIPTION, RESOURCE_GROUP, WORKSPACE)
+        uri = ml.workspaces.get(WORKSPACE).mlflow_tracking_uri
     mlflow.set_tracking_uri(uri)
     return mlflow, MlflowClient(tracking_uri=uri)
 
@@ -335,9 +361,12 @@ def summary_figure(summary: pd.DataFrame, path: Path):
     fig, ax = plt.subplots(figsize=(8, 0.45 * len(s) + 1.5))
     y = np.arange(len(s))[::-1]
     ax.scatter(s["derivation_weighted_c"], y, marker="D", color="grey", label="derivation (CV, weighted)")
-    lo = s["temporal_harrell_c"] - s["temporal_harrell_c_ci_low"]
-    hi = s["temporal_harrell_c_ci_high"] - s["temporal_harrell_c"]
-    xerr = None if lo.isna().any() or hi.isna().any() else [lo, hi]
+    lo = (s["temporal_harrell_c"] - s["temporal_harrell_c_ci_low"]).to_numpy(float)
+    hi = (s["temporal_harrell_c_ci_high"] - s["temporal_harrell_c"]).to_numpy(float)
+    missing = np.isnan(lo) | np.isnan(hi)
+    if missing.any():
+        LOGGER.warning("summary figure: no CI for %s", s["run_name"][missing].tolist())
+    xerr = [np.nan_to_num(lo), np.nan_to_num(hi)]  # runs without a CI get a zero-length bar
     ax.errorbar(s["temporal_harrell_c"], y, xerr=xerr, fmt="o", color="C0", capsize=3, label="temporal cohort (95% CI)")
     ax.set_yticks(y); ax.set_yticklabels(s["run_name"]); ax.axvline(0.5, color="grey", lw=0.8, ls="--")
     ax.set_xlabel("C-index"); ax.set_xlim(0.45, 0.85); ax.set_ylim(-0.7, len(s) - 0.3)
@@ -354,7 +383,9 @@ def score_run(mlflow, client, exp_id, parent, cohort, y_deriv, max_train, args, 
         return None
     out = out_root / "runs" / name
     (out / "figures").mkdir(parents=True, exist_ok=True)
-    local = mlflow.artifacts.download_artifacts(run_id=best.info.run_id, artifact_path="model", dst_path=str(out / "_model"))
+    # model artifacts are downloaded outside the output folder: they are inputs, not results
+    model_dir = Path(args.model_cache) / name if args.model_cache else Path(tempfile.mkdtemp(prefix=f"tv_{name}_"))
+    local = mlflow.artifacts.download_artifacts(run_id=best.info.run_id, artifact_path="model", dst_path=str(model_dir))
     pipe = mlflow.sklearn.load_model(local)
     sig_cols = [c["name"] for c in json.loads(mlflow.models.Model.load(local).signature.inputs.to_json())]
     missing = [c for c in sig_cols if c not in cohort.columns]
@@ -369,7 +400,7 @@ def score_run(mlflow, client, exp_id, parent, cohort, y_deriv, max_train, args, 
 
     # derivation-side info
     try:
-        cs = mlflow.artifacts.download_artifacts(run_id=best.info.run_id, artifact_path="cross_site_validation_results.json", dst_path=str(out / "_model"))
+        cs = mlflow.artifacts.download_artifacts(run_id=best.info.run_id, artifact_path="cross_site_validation_results.json", dst_path=str(model_dir))
         deriv = derivation_matrix(Path(cs))
         deriv.to_csv(out / "derivation_cv_cindex_matrix.csv")
         node_names = sorted(c for c in deriv.columns if c != "global")
@@ -430,15 +461,17 @@ def score_run(mlflow, client, exp_id, parent, cohort, y_deriv, max_train, args, 
             if args.bootstrap > 0:
                 r.update(bootstrap_ci(y_deriv, max_train, event[mask], time[mask], risks[mname][mask], surv[mname][mask], grid,
                                       args.horizon_max, args.ibs_horizon, args.ipcw_from, args.bootstrap, args.seed))
-            # derivation CV C-index of the same model on the same site ("central" site == pooled == "all");
-            # per-site values are unweighted means over folds; the pooled global value is the run's
-            # sample-weighted objective (weighted_c-index_validation of the best child)
-            dsite = "central" if (sname == "all" and deriv is not None and "central" in deriv.index) else sname
-            dmodel = "central" if (mname == "global" and deriv is not None and list(deriv.columns) == ["central", "global"]) else mname
-            if deriv is not None and dsite in deriv.index and dmodel in deriv.columns:
-                r["derivation_cv_cindex"] = float(deriv.loc[dsite, dmodel])
-            elif sname == "all" and mname == "global" and best.data.metrics.get("weighted_c-index_validation") is not None:
+            # derivation-side reference for the same model on the same site. Two estimands, labelled in
+            # derivation_cv_kind: 'run_weighted_objective' = the run's sample-weighted CV C-index of the global
+            # model (best child metric), used for (global, all) in every arm; 'site_fold_mean' = unweighted
+            # mean over CV folds of the validation rows of cross_site_validation_results.json for that site.
+            r["source_nodes_version"] = args.source_nodes_version
+            if sname == "all" and mname == "global" and best.data.metrics.get("weighted_c-index_validation") is not None:
                 r["derivation_cv_cindex"] = float(best.data.metrics["weighted_c-index_validation"])
+                r["derivation_cv_kind"] = "run_weighted_objective"
+            elif deriv is not None and sname in deriv.index and mname in deriv.columns:
+                r["derivation_cv_cindex"] = float(deriv.loc[sname, mname])
+                r["derivation_cv_kind"] = "site_fold_mean"
             rows.append(r)
     table = pd.DataFrame(rows)
     table.to_csv(out / "temporal_metrics.csv", index=False)
@@ -446,9 +479,12 @@ def score_run(mlflow, client, exp_id, parent, cohort, y_deriv, max_train, args, 
 
     info = {
         "run_name": name, "parent_run_id": parent.info.run_id, "best_child_run_id": best.info.run_id,
+        "model_artifact_uri": f"runs:/{best.info.run_id}/model",
         "derivation_weighted_c": best.data.metrics.get("weighted_c-index_validation"),
         "signature_columns": sig_cols, "members": [type(m).__name__ for m in members], "member_names": member_names,
         "weights": weights, "n_sample": list(getattr(ens, "n_sample", [])), "params": parent.data.params,
+        "best_params": best.data.params, "best_tags": {k: v for k, v in best.data.tags.items() if not k.startswith("mlflow.")},
+        "source_nodes_version": args.source_nodes_version,
     }
     json.dump(info, open(out / "model_info.json", "w"), indent=2)
     try:
@@ -483,6 +519,12 @@ def main():
     ap.add_argument("--min-subset", type=int, default=20, help="minimum patients for a per-area row")
     ap.add_argument("--no-mlflow", action="store_true")
     ap.add_argument("--mlflow-experiment", default=None)
+    ap.add_argument("--fail-on-error", action="store_true", help="exit non-zero if any run could not be scored (pipeline use)")
+    ap.add_argument("--model-cache", default=None, help="folder for the downloaded model artifacts (default: a temporary directory, kept out of the results)")
+    ap.add_argument("--source-nodes-version", default="v2", help="node partition the scored models were trained on (v1 = Centri sheet split, v2 = corrected geography); "
+                    "recorded in every table because per-area rows only match v2 members")
+    ap.add_argument("--raw-data-label", default="", help="data asset name:version of the raw registry CSV (lineage only)")
+    ap.add_argument("--data-folder-label", default="", help="data asset name:version of the node data folder (lineage only)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     for noisy in ("azure", "azureml", "urllib3", "msal", "mlflow"):
@@ -505,15 +547,32 @@ def main():
                 "derivation cohort" if args.ipcw_from == "derivation" else "evaluated sample", args.horizon_max,
                 f"{max_train:.1f}" if max_train else "no derivation bound")
 
+    # keep a copy of the cohort next to the results so that one download holds everything
+    cohort_dir = out_root / "cohort"
+    cohort_dir.mkdir(exist_ok=True)
+    for src in [Path(args.cohort), Path(args.cohort).with_suffix(".summary.json")]:
+        if src.exists():
+            shutil.copyfile(src, cohort_dir / src.name)  # data only: no chmod on a mounted output
+
     mlflow, client = mlflow_client()
     exp = client.get_experiment_by_name(args.experiment_name)
     if exp is None:
         raise SystemExit(f"experiment not found: {args.experiment_name}")
-    parents = parent_runs(client, exp.experiment_id)
-    if args.run_names:
-        parents = [p for p in parents if run_name(p) in set(args.run_names)]
-    parents = sorted(parents, key=run_name)
-    LOGGER.info("%d parent runs to score: %s", len(parents), [run_name(p) for p in parents])
+    parents_all = parent_runs(client, exp.experiment_id)
+    finished = [p for p in parents_all if p.info.status == "FINISHED"]
+    wanted = [n.strip() for n in " ".join(args.run_names or []).replace(",", " ").split() if n.strip()]
+    if wanted:
+        finished = [p for p in finished if run_name(p) in set(wanted)]
+        unknown = sorted(set(wanted) - {run_name(p) for p in parents_all})
+        if unknown:
+            LOGGER.warning("requested run names not in the experiment: %s", unknown)
+    parents = sorted(finished, key=run_name)
+    LOGGER.info("experiment %r: %d parent runs, %d finished%s -> %d to score: %s", args.experiment_name, len(parents_all),
+                sum(p.info.status == "FINISHED" for p in parents_all), f" (filtered to {len(wanted)} names)" if wanted else "",
+                len(parents), [run_name(p) for p in parents])
+    skipped = {run_name(p): p.info.status for p in parents_all if p.info.status != "FINISHED"}
+    if skipped:
+        LOGGER.warning("not finished, skipped: %s", skipped)
 
     results, failures = [], {}
     for p in parents:
@@ -547,36 +606,73 @@ def main():
     summary = pd.DataFrame(rows).sort_values("run_name")
     summary.to_csv(out_root / "summary_runs.csv", index=False)
     pd.concat([r["table"] for r in results]).to_csv(out_root / "temporal_metrics_all_runs.csv", index=False)
+    # derivation side across runs: weighted objective, per-site CV matrix (long) and the run parameters
+    drows, prow = [], []
+    for r in results:
+        info = r["info"]
+        prow.append({"run_name": info["run_name"], "parent_run_id": info["parent_run_id"], "best_child_run_id": info["best_child_run_id"],
+                     "model_artifact_uri": info["model_artifact_uri"], "source_nodes_version": info["source_nodes_version"],
+                     "derivation_weighted_c": info["derivation_weighted_c"], "n_members": len(info["members"]), "weights": json.dumps(info["weights"]),
+                     "n_sample": json.dumps(info["n_sample"]), "n_signature_features": len(info["signature_columns"]),
+                     **{f"param__{k}": v for k, v in sorted(info["params"].items())},
+                     **{f"best_param__{k}": v for k, v in sorted(info["best_params"].items())}})
+        m = out_root / "runs" / info["run_name"] / "derivation_cv_cindex_matrix.csv"
+        if m.exists():
+            dm = pd.read_csv(m, index_col=0)
+            for site in dm.index:
+                for model in dm.columns:
+                    drows.append({"run_name": info["run_name"], "site": site, "model": model, "cv_cindex": dm.loc[site, model]})
+    pd.DataFrame(prow).to_csv(out_root / "derivation_runs.csv", index=False)
+    if drows:
+        pd.DataFrame(drows).to_csv(out_root / "derivation_cv_cindex_all_runs.csv", index=False)
     try:
         summary_figure(summary, out_root / "summary_derivation_vs_temporal.png")
     except Exception as e:  # noqa: BLE001
         LOGGER.warning("summary figure failed: %s", e)
-    json.dump({"source_experiment": args.experiment_name, "args": vars(args), "failures": failures,
+    scored = [{"run_name": r["info"]["run_name"], "parent_run_id": r["info"]["parent_run_id"], "best_child_run_id": r["info"]["best_child_run_id"],
+               "model_artifact_uri": r["info"]["model_artifact_uri"]} for r in results]
+    json.dump({"source_experiment": args.experiment_name, "source_experiment_id": exp.experiment_id, "args": vars(args),
+               "library_versions": library_versions(), "runs_scored": scored, "runs_skipped": skipped, "failures": failures,
                "cohort": {"n": int(len(cohort)), "events": int(cohort["event"].sum())}}, open(out_root / "run_info.json", "w"), indent=2)
     LOGGER.info("\n%s", summary[["run_name", "derivation_weighted_c", "temporal_harrell_c", "temporal_harrell_c_ci_low", "temporal_harrell_c_ci_high", "temporal_uno_c", f"temporal_ibs_{args.ibs_horizon:g}"]].to_string(index=False))
 
+    if failures:
+        LOGGER.error("failed runs: %s", list(failures))
     if not args.no_mlflow:
-        exp_name = args.mlflow_experiment or f"Temporal Validation - {args.experiment_name}"
-        mlflow.set_experiment(exp_name)
-        with mlflow.start_run(run_name=f"temporal_validation_{len(results)}_runs") as run:
-            mlflow.log_params({"source_experiment": args.experiment_name, "n_runs_scored": len(results), "bootstrap": args.bootstrap, "ipcw_from": args.ipcw_from,
-                               "horizons": ",".join(f"{h:g}" for h in args.horizons), "horizon_max": args.horizon_max, "ibs_horizon": args.ibs_horizon,
-                               "cohort_n": int(len(cohort)), "cohort_events": int(cohort["event"].sum())})
+        if in_azureml_job():
+            # inside an Azure ML job start_run() attaches to the job's own run: metrics, params and
+            # artifacts land on the job, so one job download holds everything
+            ctx, exp_name = mlflow.start_run(), os.getenv("AZUREML_ARM_PROJECT_NAME", "azureml job")
+        else:
+            exp_name = args.mlflow_experiment or f"Temporal Validation - {args.experiment_name}"
+            mlflow.set_experiment(exp_name)
+            ctx = mlflow.start_run(run_name=f"temporal_validation_{len(results)}_runs")
+        with ctx as run:
+            params = {"source_experiment": args.experiment_name, "source_experiment_id": exp.experiment_id,
+                      "n_runs_scored": len(results), "n_runs_skipped": len(skipped), "n_runs_failed": len(failures),
+                      "bootstrap": args.bootstrap, "seed": args.seed, "ipcw_from": args.ipcw_from,
+                      "horizons": ",".join(f"{h:g}" for h in args.horizons), "horizon_max": args.horizon_max, "ibs_horizon": args.ibs_horizon,
+                      "min_subset": args.min_subset, "source_nodes_version": args.source_nodes_version,
+                      "raw_data_label": args.raw_data_label, "data_folder_label": args.data_folder_label,
+                      "cohort_n": int(len(cohort)), "cohort_events": int(cohort["event"].sum())}
+            params.update({f"lib_{k}": v for k, v in library_versions().items()})
+            mlflow.log_params(params)
             for _, s in summary.iterrows():
                 key = s["run_name"]
                 mlflow.log_metric(f"harrell_c__{key}", float(s["temporal_harrell_c"]))
+                if pd.notna(s["derivation_weighted_c"]):
+                    mlflow.log_metric(f"derivation_c__{key}", float(s["derivation_weighted_c"]))
                 if pd.notna(s["temporal_uno_c"]):
                     mlflow.log_metric(f"uno_c__{key}", float(s["temporal_uno_c"]))
                 v = s[f"temporal_ibs_{args.ibs_horizon:g}"]
                 if pd.notna(v):
                     mlflow.log_metric(f"ibs{args.ibs_horizon:g}__{key}", float(v))
-            # log everything except the downloaded models
-            for p in out_root.rglob("*"):
-                if p.is_file() and "_model" not in p.parts:
-                    mlflow.log_artifact(str(p), artifact_path=str(p.parent.relative_to(out_root)) if p.parent != out_root else None)
-            LOGGER.info("logged to MLflow experiment %r run %s", exp_name, run.info.run_id)
-    if failures:
-        LOGGER.error("failed runs: %s", list(failures))
+            mlflow.log_artifacts(str(out_root))  # models were downloaded elsewhere: the folder is results only
+            LOGGER.info("logged to MLflow (%s) run %s", exp_name, run.info.run_id)
+            if failures and args.fail_on_error:
+                raise SystemExit(f"{len(failures)} run(s) failed: {list(failures)}")  # inside the context: the run ends FAILED
+    elif failures and args.fail_on_error:
+        raise SystemExit(f"{len(failures)} run(s) failed: {list(failures)}")
 
 
 if __name__ == "__main__":

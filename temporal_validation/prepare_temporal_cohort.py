@@ -181,7 +181,13 @@ def main() -> None:
     out["event"] = out["event"].astype(int)
     out = out.sort_values("patient_number").reset_index(drop=True)
 
+    import hashlib
+    with open(args.raw_csv, "rb") as fh:
+        raw_sha = hashlib.sha256(fh.read()).hexdigest()
     summary = {
+        "raw_source": {"file": Path(args.raw_csv).name, "sha256": raw_sha, "n_rows": int(raw.shape[0]), "n_columns": int(raw.shape[1]),
+                       "n_training_rows": int(len(train))},
+        "centre_table": Path(args.centre_table).name,
         "n_validation_rows": int(len(val)),
         "status_counts": {k: int(v) for k, v in counts.items()},
         "n_usable": int(len(out)),

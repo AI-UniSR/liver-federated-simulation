@@ -1,0 +1,96 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+type: command
+
+name: temporal_score_experiment
+display_name: Temporal validation - score the models of an MLflow experiment
+version: 2
+description: >
+  For every FINISHED parent run of the source MLflow experiment that has a best_optuna_model
+  child: loads the logged pipeline, scores the temporal cohort with the global model and with
+  every ensemble member (overall and per federated area), computes Harrell C, Uno C,
+  time-dependent AUC, IBS and bootstrap CIs (PRECISION-AI conventions), reads the
+  derivation-side numbers (weighted CV objective, per-site CV matrix, run and best-trial
+  parameters) from the same run, writes tables and figures to the output folder and logs
+  params, metrics and all artifacts on this job's MLflow run.
+
+inputs:
+  cohort_dir:
+    type: uri_folder
+    description: Output of temporal_prepare_cohort
+  data_folder:
+    type: uri_folder
+    description: Federated node data folder (central/original/data.csv sets the derivation follow-up bound)
+  experiment_name:
+    type: string
+    description: Source MLflow experiment whose finished runs are scored
+  run_names:
+    type: string
+    default: ""
+    description: Optional space- or comma-separated parent run names; empty = all finished runs
+  source_nodes_version:
+    type: string
+    default: v2
+    description: Node partition the scored models were trained on (v1 Centri-sheet split, v2 corrected geography); recorded in every table
+  bootstrap:
+    type: integer
+    default: 500
+  seed:
+    type: integer
+    default: 42
+  horizons:
+    type: string
+    default: "6 12 18 24"
+    description: AUC time points in months (space separated)
+  horizon_max:
+    type: number
+    default: 24
+  ibs_horizon:
+    type: number
+    default: 12
+  ipcw_from:
+    type: string
+    default: evaluated
+    description: evaluated (PRECISION-AI convention) or derivation (sensitivity)
+  min_subset:
+    type: integer
+    default: 20
+  raw_data_label:
+    type: string
+    default: ""
+    description: name:version of the raw registry data asset, for lineage only
+  data_folder_label:
+    type: string
+    default: ""
+    description: name:version of the node data folder asset, for lineage only
+
+outputs:
+  results:
+    type: uri_folder
+    description: >
+      cohort/ (prepared cohort + summary), runs/<run>/ (temporal_metrics.csv, temporal_harrell_c_matrix.csv,
+      derivation_cv_cindex_matrix.csv, predictions.csv, model_info.json, figures/), summary_runs.csv,
+      temporal_metrics_all_runs.csv, derivation_runs.csv, derivation_cv_cindex_all_runs.csv,
+      summary_derivation_vs_temporal.png, run_info.json (run ids, library versions, skipped/failed runs)
+
+code: ..
+
+environment: azureml:optuna-env:22
+
+command: >-
+  python score_temporal.py
+  --experiment-name "${{inputs.experiment_name}}"
+  --run-names ${{inputs.run_names}}
+  --cohort ${{inputs.cohort_dir}}/temporal_cohort_prepared.csv
+  --derivation-csv ${{inputs.data_folder}}/central/original/data.csv
+  --output-dir ${{outputs.results}}
+  --source-nodes-version ${{inputs.source_nodes_version}}
+  --bootstrap ${{inputs.bootstrap}}
+  --seed ${{inputs.seed}}
+  --horizons ${{inputs.horizons}}
+  --horizon-max ${{inputs.horizon_max}}
+  --ibs-horizon ${{inputs.ibs_horizon}}
+  --ipcw-from ${{inputs.ipcw_from}}
+  --min-subset ${{inputs.min_subset}}
+  --raw-data-label "${{inputs.raw_data_label}}"
+  --data-folder-label "${{inputs.data_folder_label}}"
+  --fail-on-error

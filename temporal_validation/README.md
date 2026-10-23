@@ -78,6 +78,44 @@ python temporal_validation/score_temporal.py \
   --output-dir out/temporal_oct23 --bootstrap 500
 ```
 
+## 3. Azure ML pipeline (`azureml/`)
+
+The same two scripts packaged as command components (`prepare_component.yml`,
+`score_component.yml`) and a pipeline job (`pipeline.yml`, default compute
+`clusterprdwe-u6nir2`). Everything that fixes the numbers is pinned in `pipeline.yml`: environment
+`azureml:optuna-env:22` (scikit-learn 1.7.2, scikit-survival 0.25.0, mlflow 2.22.5, the versions
+the models were pickled with), data assets `file-validation-btc-csv:5` and
+`federated-learning-data-folder:2` (their labels are logged as params), `seed`. Inputs: the source
+MLflow experiment name, an optional list of run names, `source_nodes_version` (v1/v2, written to
+every table), and the metric parameters. Only FINISHED parent runs with a `best_optuna_model`
+child are scored; the others are listed in `run_info.json` and in the job params.
+
+Inside the job the scoring script attaches to the job's own MLflow run: params (source
+experiment and id, runs scored/skipped/failed, cohort size, library versions, data labels), one
+metric per run (`harrell_c__<run>`, `derivation_c__<run>`, `uno_c__<run>`, `ibs12__<run>`) and the
+whole results folder as artifacts. Derivation-side numbers are complete: `summary_runs.csv`
+(weighted CV objective per run), `derivation_cv_cindex_all_runs.csv` (per-site CV matrix),
+`derivation_runs.csv` (parent and best-child run ids, model artifact URI, ensemble weights,
+run config `param__*` and best-trial hyper-parameters `best_param__*`). In the long tables the
+column `derivation_cv_kind` says which estimand `derivation_cv_cindex` is:
+`run_weighted_objective` (pooled row, the run's sample-weighted CV C) or `site_fold_mean`
+(per-area rows, unweighted mean over folds).
+The scoring step's output `results` holds everything (a copy of the prepared cohort, per-run
+tables, predictions and figures, the cross-run summaries); the downloaded model artifacts stay
+outside it. Download it from the scoring step (a download addressed to the pipeline job only
+returns the pipeline logs):
+
+```
+az ml job create -f temporal_validation/azureml/pipeline.yml \
+  --set inputs.experiment_name="Federated Experiment October 23rd"          # all finished runs
+STEP=$(az ml job list --parent-job-name <pipeline job name> --query "[?display_name=='score'].name" -o tsv)
+az ml job download -n $STEP --output-name results --download-path out/temporal_oct23
+```
+
+or `temporal_validation/azureml/run_pipeline.sh "<experiment>" ["run_a run_b"]` with
+`DOWNLOAD_DIR=...` to wait and download. Overrides: `--set inputs.bootstrap=200`,
+`--set inputs.run_names="central_gradient_nofs_basic"`, `--set inputs.ipcw_from=derivation`.
+
 Caveats: the per-area rows use the corrected geography (data asset v2); models trained on v1
 nodes (Aug-6 and Oct-22 federated runs) have members that do not correspond to those areas.
 Follow-up in the temporal cohort is short (median about 10 months), so horizons beyond 12

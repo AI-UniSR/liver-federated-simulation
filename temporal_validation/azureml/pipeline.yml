@@ -1,0 +1,70 @@
+$schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
+type: pipeline
+
+display_name: Temporal validation of SraceFed models
+experiment_name: temporal-validation
+description: >
+  Two steps: (1) prepare the temporal validation cohort from the raw registry export with the
+  verified centre->area table; (2) score every finished run of the source MLflow experiment
+  (global model and ensemble members, overall and per area), read the derivation-side numbers
+  from the same runs, and log tables, figures and metrics on the scoring job. Download the
+  results from the scoring step: az ml job download -n <score step> --output-name results.
+  Data assets and environment are pinned; change the pins here when a new version is intended.
+
+settings:
+  default_compute: azureml:clusterprdwe-u6nir2
+  continue_on_step_failure: false
+
+inputs:
+  raw_data:
+    type: uri_file
+    path: azureml:file-validation-btc-csv:5
+  data_folder:
+    type: uri_folder
+    path: azureml:federated-learning-data-folder:2
+  # lineage labels, logged as job params and written to run_info.json (keep in sync with the paths above)
+  raw_data_label: "file-validation-btc-csv:5"
+  data_folder_label: "federated-learning-data-folder:2"
+  experiment_name: "Federated Experiment October 22nd"
+  run_names: ""
+  source_nodes_version: v2
+  bootstrap: 500
+  seed: 42
+  horizons: "6 12 18 24"
+  horizon_max: 24
+  ibs_horizon: 12
+  ipcw_from: evaluated
+  min_subset: 20
+
+outputs:
+  results:
+    type: uri_folder
+    mode: rw_mount
+
+jobs:
+  prepare:
+    type: command
+    component: file:./prepare_component.yml
+    inputs:
+      raw_data: ${{parent.inputs.raw_data}}
+
+  score:
+    type: command
+    component: file:./score_component.yml
+    inputs:
+      cohort_dir: ${{parent.jobs.prepare.outputs.cohort_dir}}
+      data_folder: ${{parent.inputs.data_folder}}
+      experiment_name: ${{parent.inputs.experiment_name}}
+      run_names: ${{parent.inputs.run_names}}
+      source_nodes_version: ${{parent.inputs.source_nodes_version}}
+      bootstrap: ${{parent.inputs.bootstrap}}
+      seed: ${{parent.inputs.seed}}
+      horizons: ${{parent.inputs.horizons}}
+      horizon_max: ${{parent.inputs.horizon_max}}
+      ibs_horizon: ${{parent.inputs.ibs_horizon}}
+      ipcw_from: ${{parent.inputs.ipcw_from}}
+      min_subset: ${{parent.inputs.min_subset}}
+      raw_data_label: ${{parent.inputs.raw_data_label}}
+      data_folder_label: ${{parent.inputs.data_folder_label}}
+    outputs:
+      results: ${{parent.outputs.results}}

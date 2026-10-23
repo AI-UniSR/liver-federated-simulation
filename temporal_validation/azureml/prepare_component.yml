@@ -1,0 +1,34 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+type: command
+
+name: temporal_prepare_cohort
+display_name: Temporal validation - prepare cohort
+version: 1
+description: >
+  Builds the model-ready temporal validation cohort from the raw registry export (both cohorts,
+  column 'coorte'): validation rows, sigla and federated area from the bundled centre table,
+  removal of the patients re-entered from the development cohort, follow-up recomputed from the
+  dates, the 33 model features with the derivation recipe, coding checks. Cross-checked against
+  the bundled patient registry.
+
+inputs:
+  raw_data:
+    type: uri_file
+    description: Raw registry CSV (data asset file-validation-btc-csv)
+
+outputs:
+  cohort_dir:
+    type: uri_folder
+    description: temporal_cohort_prepared.csv and temporal_cohort_prepared.summary.json
+
+# the code snapshot is the whole temporal_validation folder (scripts + resources/)
+code: ..
+
+environment: azureml:optuna-env:22
+
+command: >-
+  python prepare_temporal_cohort.py
+  --raw-csv ${{inputs.raw_data}}
+  --centre-table resources/centri_aree_federate.csv
+  --anagrafica resources/anagrafica_pazienti_centri_aree.csv
+  --output ${{outputs.cohort_dir}}/temporal_cohort_prepared.csv
