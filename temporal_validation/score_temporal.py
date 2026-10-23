@@ -633,8 +633,13 @@ def main():
         LOGGER.warning("summary figure failed: %s", e)
     scored = [{"run_name": r["info"]["run_name"], "parent_run_id": r["info"]["parent_run_id"], "best_child_run_id": r["info"]["best_child_run_id"],
                "model_artifact_uri": r["info"]["model_artifact_uri"]} for r in results]
+    done = {s["run_name"] for s in scored}
+    no_final_model = {run_name(p): p.info.run_id for p in parents if run_name(p) not in done and run_name(p) not in failures}
+    if no_final_model:
+        LOGGER.warning("finished runs without a best_optuna_model child (aborted jobs), not scored: %s", sorted(no_final_model))
     json.dump({"source_experiment": args.experiment_name, "source_experiment_id": exp.experiment_id, "args": vars(args),
-               "library_versions": library_versions(), "runs_scored": scored, "runs_skipped": skipped, "failures": failures,
+               "library_versions": library_versions(), "runs_scored": scored, "runs_not_finished": skipped,
+               "runs_without_final_model": no_final_model, "failures": failures,
                "cohort": {"n": int(len(cohort)), "events": int(cohort["event"].sum())}}, open(out_root / "run_info.json", "w"), indent=2)
     LOGGER.info("\n%s", summary[["run_name", "derivation_weighted_c", "temporal_harrell_c", "temporal_harrell_c_ci_low", "temporal_harrell_c_ci_high", "temporal_uno_c", f"temporal_ibs_{args.ibs_horizon:g}"]].to_string(index=False))
 
