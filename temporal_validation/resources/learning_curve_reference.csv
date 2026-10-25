@@ -1,0 +1,8 @@
+label,n,harrell_c,kind
+americas,71,0.591,standalone
+asia,113,0.673,standalone
+europe_non_italy,133,0.646,standalone
+italy_centre_south,127,0.712,standalone
+italy_north,288,0.735,standalone
+federated ensemble 0.736,732,0.736,line
+pooled logged model 0.734,732,0.734,line
