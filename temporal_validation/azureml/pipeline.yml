@@ -80,6 +80,7 @@ jobs:
     component: file:./compare_component.yml
     inputs:
       results: ${{parent.jobs.score.outputs.results}}
+      data_folder: ${{parent.inputs.data_folder}}
       bootstrap: ${{parent.inputs.bootstrap_pairs}}
       seed: ${{parent.inputs.seed}}
     outputs:

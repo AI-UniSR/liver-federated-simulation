@@ -136,8 +136,20 @@ common input features, top 4/8/10 overlap, Jaccard of the top-10 mean |SHAP| set
 central, own area and whole cohort). `report.md` collects the key tables.
 
 ```
-python temporal_validation/compare_runs.py --results out/final_scored --output-dir out/final --bootstrap 1000
+python temporal_validation/compare_runs.py --results out/final_scored --output-dir out/final --bootstrap 1000 \
+  --data-folder data/data_survival
 ```
+
+Unless `--no-paper`, the step then runs `paper_artifacts.py`, which writes `paper/` next to `tables/`: the
+display items of the manuscript (`docs/PAPER_STRUCTURE.md` of the workbench) as `.docx` with caption + `.csv`
+(tables) and `.png` + `.svg` + `.pdf` (figures), split into `main/` (Table 1 cohorts, Table 2 paired differences,
+Fig. 2 discrimination across arms, Fig. 3 feature selection, Fig. 4 calibration, Fig. 5 SHAP) and `supplementary/`
+(search spaces, centres, full Table 1, derivation and temporal metrics of every run, all paired comparisons, the
+single-centre matrix, rankings and agreement, the mutual-information arm, trial-matched derivation, per-area
+forest plots, calibration curves, Kaplan-Meier by node and area, SHAP beeswarm montage, missingness), plus
+`captions.md` and `numbers.json` (the figures quoted in the text). Table 1 and the Kaplan-Meier curves need
+`--data-folder` (node data) and the centre table (`--centres-csv`, default `resources/centri_aree_federate.csv`);
+the docx output needs `python-docx` (environment `optuna-env:23`).
 
 ## 4. Azure ML pipeline (`azureml/`)
 

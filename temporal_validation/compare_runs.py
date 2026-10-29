@@ -164,6 +164,9 @@ def main():
     ap.add_argument("--bootstrap", type=int, default=1000, help="paired bootstrap resamples per comparison")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--n-jobs", type=int, default=-1, help="parallel workers for the bootstrap (joblib)")
+    ap.add_argument("--data-folder", default=None, help="node data folder (central/original/data.csv and the nodes): Table 1, KM and missingness of the paper items")
+    ap.add_argument("--centres-csv", default=str(Path(__file__).resolve().parent / "resources" / "centri_aree_federate.csv"), help="centre table for Table 1 / Table S3")
+    ap.add_argument("--no-paper", action="store_true", help="skip the paper display items (paper_artifacts.py)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -315,6 +318,11 @@ def main():
     (out / "report.md").write_text("\n".join(parts), encoding="utf-8")
     json.dump({"args": vars(args), "n_runs": int(len(runs)), "n_pairs": len(pairs)}, open(tables / "compare_info.json", "w"), indent=2)
     LOGGER.info("written %s", out)
+    if not args.no_paper:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from paper_artifacts import build
+        build(out, Path(args.data_folder) if args.data_folder else None, Path(args.centres_csv) if args.centres_csv else None)
 
 
 if __name__ == "__main__":

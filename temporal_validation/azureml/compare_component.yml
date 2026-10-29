@@ -3,9 +3,11 @@ type: command
 
 name: temporal_compare_runs
 display_name: Temporal validation - compare the scored runs
-version: 1
+version: 2
 description: >
-  Copies the scoring output into the final folder and adds tables/ and report.md: paired bootstrap
+  Copies the scoring output into the final folder and adds tables/, report.md and paper/ (the paper's
+  display items: Table 1 of the cohorts, Fig. 2-5, supplementary tables as docx + csv and figures as
+  png + svg + pdf, captions.md, numbers.json): paired bootstrap
   differences of the temporal Harrell C for every pair of runs that differs in one design factor
   (central vs federated, feature-selection method, imputation, node alone vs federation on the node's
   own area and on the whole cohort), feature-ranking agreement on the same pairs, derivation best-trial
@@ -16,6 +18,9 @@ inputs:
   results:
     type: uri_folder
     description: Output of temporal_score_experiment
+  data_folder:
+    type: uri_folder
+    description: Federated node data folder (Table 1, Kaplan-Meier and missingness of the paper items)
   bootstrap:
     type: integer
     default: 1000
@@ -30,11 +35,12 @@ outputs:
 
 code: ..
 
-environment: azureml:optuna-env:22
+environment: azureml:optuna-env:23
 
 command: >-
   python compare_runs.py
   --results ${{inputs.results}}
   --output-dir ${{outputs.final}}
+  --data-folder ${{inputs.data_folder}}
   --bootstrap ${{inputs.bootstrap}}
   --seed ${{inputs.seed}}
