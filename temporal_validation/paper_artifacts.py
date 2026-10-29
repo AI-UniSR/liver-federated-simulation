@@ -24,12 +24,27 @@ import pandas as pd
 
 LOGGER = logging.getLogger("paper_artifacts")
 AREAS = ["americas", "asia", "europe_non_italy", "italy_centre_south", "italy_north"]
-AREA_LABEL = {"americas": "Americas", "asia": "Asia", "europe_non_italy": "Europe (non-Italy)",
+AREA_LABEL = {"americas": "Americas", "asia": "Asia", "europe_non_italy": "Europe outside Italy",
               "italy_centre_south": "Italy centre-south", "italy_north": "Italy north"}
 MODEL_LABEL = {"cox": "Cox", "gradient": "Gradient boosting", "rsf": "Random survival forest"}
 FS_LABEL = {"nofs": "33 features", "score": "10 features (score test)", "mi": "10 features (mutual information)"}
 ARM_COLOR = {"central": "#1f4e79", "federated": "#c0504d", "standalone": "#8c8c8c"}
 MAIN_MODEL = ("cox", "score", "basic")  # recommended parsimonious model
+# display names of the registry variables (paper vocabulary)
+FEATURE_LABEL = {
+    "sex": "Sex (male)", "age": "Age", "viral": "Viral hepatitis", "surgery": "Previous surgery",
+    "stent or biliary draige": "Stent or biliary drainage", "lung mets": "Lung metastases", "lymph mets": "Lymph node metastases",
+    "peri mets": "Peritoneal metastases", "liver mets": "Liver metastases", "bone mets": "Bone metastases", "other mets": "Other metastases",
+    "number of met sites": "Number of metastatic sites", "locally advanced/metastatic": "Metastatic disease", "bmi": "BMI",
+    "ps ecog": "ECOG PS >= 1", "ca199": "CA19-9", "cea": "CEA", "neutrophils": "Neutrophils", "nlr": "NLR", "lymphocytes": "Lymphocytes",
+    "eosinophils": "Eosinophils", "basophils": "Basophils", "monocytes": "Monocytes", "albumin": "Albumin", "albumin bin": "Albumin (low)",
+    "platelets": "Platelets", "bilirubin": "Bilirubin", "bilirubin bin": "Bilirubin (high)", "creatinine": "Creatinine", "astGOT": "AST",
+    "altGPT": "ALT", "ggt": "GGT", "location - Intrahepatic": "Intrahepatic location",
+}
+
+
+def flabel(name) -> str:
+    return FEATURE_LABEL.get(str(name), str(name))
 
 
 # ----------------------------------------------------------------------------- output helpers
@@ -116,7 +131,7 @@ def cohort_stats(df: pd.DataFrame) -> dict:
     s = {"Patients": str(n), "Deaths": f"{int(x['event'].sum())} ({100 * x['event'].mean():.1f}%)",
          "Median observed follow-up, months": f"{x['tte'].median():.1f}", "Median OS (Kaplan-Meier), months": f"{km_median(x['tte'], x['event']):.1f}",
          "Age, years": med("age"), "Male sex": pct("sex", 1), "ECOG >= 1": pct("ps ecog", 1),
-         "Metastatic disease (code 2; 1 = locally advanced)": pct("locally advanced/metastatic", 2),
+         "Metastatic disease": pct("locally advanced/metastatic", 2),
          "Intrahepatic location": pct("location - Intrahepatic", 1), "Previous surgery": pct("surgery", 1),
          "Number of metastatic sites": med("number of met sites"), "CA19-9, U/mL": med("ca199"), "CEA, ng/mL": med("cea"),
          "Albumin, g/dL": med("albumin"), "Neutrophils, x10^9/L": med("neutrophils"), "NLR": med("nlr"),
@@ -133,14 +148,17 @@ FEATURES = ["sex", "age", "viral", "surgery", "stent or biliary draige", "lung m
 def full_table1_row(df: pd.DataFrame) -> dict:
     x = df.apply(pd.to_numeric, errors="coerce")
     out = {}
+    coded = {"sex": 1, "locally advanced/metastatic": 2}  # n (%) of the code: male; metastatic
     for c in FEATURES:
         if c not in x.columns:
             continue
         v = x[c].dropna()
-        if len(v) and set(v.unique()) <= {0, 1}:
-            out[c] = f"{int(v.sum())} ({100 * v.mean():.1f}%); missing {x[c].isna().sum()}"
+        if len(v) and c in coded:
+            out[flabel(c)] = f"{int((v == coded[c]).sum())} ({100 * (v == coded[c]).mean():.1f}%); missing {x[c].isna().sum()}"
+        elif len(v) and set(v.unique()) <= {0, 1}:
+            out[flabel(c)] = f"{int(v.sum())} ({100 * v.mean():.1f}%); missing {x[c].isna().sum()}"
         elif len(v):
-            out[c] = f"{v.median():.2f} ({v.quantile(.25):.2f}-{v.quantile(.75):.2f}); missing {x[c].isna().sum()}"
+            out[flabel(c)] = f"{v.median():.2f} ({v.quantile(.25):.2f}-{v.quantile(.75):.2f}); missing {x[c].isna().sum()}"
     return out
 
 
@@ -160,18 +178,24 @@ def cohorts_tables(w: Writer, nodes: dict, cohort: pd.DataFrame, centres: pd.Dat
             cols[f"Derivation: {AREA_LABEL[a]}"] = cohort_stats(nodes[a])
     if "central" in nodes:
         cols["Derivation: pooled"] = cohort_stats(nodes["central"])
-    cols["Temporal validation"] = cohort_stats(cohort)
+    for a in AREAS:  # temporal cohort per area (per-cluster characteristics of the validation data, TRIPOD-Cluster 10b)
+        sub = cohort[cohort["area_federata"] == a]
+        if len(sub):
+            cols[f"Temporal: {AREA_LABEL[a]}"] = cohort_stats(sub)
+    cols["Temporal: all"] = cohort_stats(cohort)
     t1 = pd.DataFrame(cols)
     if centres is not None:
         row_c, row_k = {}, {}
-        for a in AREAS:
-            sub = centres[centres["area_federata"] == a]
-            row_c[f"Derivation: {AREA_LABEL[a]}"] = str(int((sub["n_derivazione"].astype(int) > 0).sum()))
-            row_k[f"Derivation: {AREA_LABEL[a]}"] = str(sub.loc[sub["n_derivazione"].astype(int) > 0, "paese"].nunique())
-        row_c["Derivation: pooled"] = str(int((centres["n_derivazione"].astype(int) > 0).sum()))
-        row_k["Derivation: pooled"] = str(centres.loc[centres["n_derivazione"].astype(int) > 0, "paese"].nunique())
-        row_c["Temporal validation"] = str(int((centres["n_validazione"].astype(int) > 0).sum()))
-        row_k["Temporal validation"] = str(centres.loc[centres["n_validazione"].astype(int) > 0, "paese"].nunique())
+        for prefix, ncol in (("Derivation", "n_derivazione"), ("Temporal", "n_validazione")):
+            for a in AREAS:
+                sub = centres[centres["area_federata"] == a]
+                key = f"{prefix}: {AREA_LABEL[a]}"
+                if key in cols:
+                    row_c[key] = str(int((sub[ncol].astype(int) > 0).sum()))
+                    row_k[key] = str(sub.loc[sub[ncol].astype(int) > 0, "paese"].nunique())
+            key = "Derivation: pooled" if prefix == "Derivation" else "Temporal: all"
+            row_c[key] = str(int((centres[ncol].astype(int) > 0).sum()))
+            row_k[key] = str(centres.loc[centres[ncol].astype(int) > 0, "paese"].nunique())
         t1 = pd.concat([pd.DataFrame({"Centres": row_c, "Countries": row_k}).T, t1])
     t1.index.name = "Characteristic"
     w.table(t1, "Table1_cohorts", "Table 1. Derivation cohort by federated node, pooled derivation cohort and temporal validation cohort. "
@@ -381,7 +405,7 @@ def fig3_selection(w: Writer, final: Path, runs: pd.DataFrame, paired: pd.DataFr
         ys = [ranks[k].index(f) + 1 if f in ranks[k] else np.nan for k in cols]
         ax.plot(range(len(cols)), ys, "-o", ms=4, lw=1, alpha=0.8)
         if not np.isnan(ys[0]) and ys[0] <= top:
-            ax.text(-0.1, ys[0], f, ha="right", va="center", fontsize=7)
+            ax.text(-0.1, ys[0], flabel(f), ha="right", va="center", fontsize=7)
     ax.set_xticks(range(len(cols))); ax.set_xticklabels([f"{'pooled' if k[0] == 'central' else 'federated'}\n{k[1]}" for k in cols], fontsize=8)
     ax.set_ylim(top + 0.5, 0.5); ax.set_ylabel("rank (score test, forward order)"); ax.set_title("(a) Pooled vs federated ranking", fontsize=10, loc="left")
     ax.axhline(10.5, color="grey", lw=0.6, ls="--"); ax.set_xlim(-1.6, len(cols) - 0.5)
@@ -397,7 +421,7 @@ def fig3_selection(w: Writer, final: Path, runs: pd.DataFrame, paired: pd.DataFr
             for j, f in enumerate(show):
                 mat[i, j] = 1 if f in rk[:10] else 0
     ax.imshow(mat, cmap="Blues", vmin=0, vmax=1.4, aspect="auto")
-    ax.set_xticks(range(len(show))); ax.set_xticklabels(show, rotation=60, ha="right", fontsize=7)
+    ax.set_xticks(range(len(show))); ax.set_xticklabels([flabel(s) for s in show], rotation=60, ha="right", fontsize=7)
     ax.set_yticks(range(len(groups))); ax.set_yticklabels([g[2] for g in groups], fontsize=8)
     ax.set_title("(b) The 10 selected features (dark) by arm and node", fontsize=10, loc="left")
     # (c) agreement with the pooled ranking
@@ -513,7 +537,7 @@ def fig5_shap(w: Writer, final: Path, runs: pd.DataFrame, numbers: dict):
         y = np.arange(len(feats))
         ax.barh(y - 0.18, [imp_tabs["central"].get(x, 0) for x in feats], height=0.36, color=ARM_COLOR["central"], label="pooled")
         ax.barh(y + 0.18, [imp_tabs["federated"].get(x, 0) for x in feats], height=0.36, color=ARM_COLOR["federated"], label="federated")
-        ax.set_yticks(y); ax.set_yticklabels(feats, fontsize=8); ax.invert_yaxis(); ax.set_xlabel("mean |SHAP| on the temporal cohort (100 patients)")
+        ax.set_yticks(y); ax.set_yticklabels([flabel(f) for f in feats], fontsize=8); ax.invert_yaxis(); ax.set_xlabel("mean |SHAP| on the temporal cohort (100 patients)")
         ax.legend(fontsize=8, frameon=False); fig.tight_layout()
         w.figure(fig, "Fig5c_shap_importance", "Mean absolute SHAP value per feature of the 10-feature Cox model, pooled and federated arms, computed "
                  "with the logged explainers on 100 patients of the temporal cohort.")
@@ -527,18 +551,70 @@ def fig5_shap(w: Writer, final: Path, runs: pd.DataFrame, numbers: dict):
 
 
 def supplementary_tables(w: Writer, final: Path, runs: pd.DataFrame, paired: pd.DataFrame, agree: pd.DataFrame, numbers: dict):
-    # S2 search spaces from the run params (model_params_space keys when logged)
+    # S2 search spaces and run settings from the logged params, in paper vocabulary
+    def params_of(role, m, fs, imp):
+        r = runs[(runs["role"] == role) & (runs["model"] == m) & (runs["fs"] == fs) & (runs["imputation"] == imp)]
+        if not len(r):
+            return {}
+        return json.load(open(final / "runs" / r.iloc[0]["run_name"] / "model_info.json")).get("params", {})
     rows = []
     for m in ("cox", "gradient", "rsf"):
-        r = runs[(runs["role"] == "central") & (runs["model"] == m) & (runs["fs"] == "nofs")]
-        if len(r):
-            info = json.load(open(final / "runs" / r.iloc[0]["run_name"] / "model_info.json"))
-            for k, v in sorted(info.get("params", {}).items()):
-                if "model_params_space" in k or k.startswith("train.") or k.startswith("imputation.") or k.startswith("feature_selection.") or k.startswith("shap."):
-                    rows.append({"Model": MODEL_LABEL[m], "Parameter": k, "Value or range": v})
+        p = params_of("central", m, "nofs", "basic")
+        for k, v in sorted(p.items()):
+            if "model_params_space" in k:
+                rows.append({"Section": f"Search space, {MODEL_LABEL[m]}", "Parameter": k.split(".")[-1], "Value": v})
+    p = params_of("central", "cox", "nofs", "basic")
+    settings = [("Tuning", "trials per run", p.get("train.num_tuning_round")), ("Tuning", "sampler", "TPE, seed 42"),
+                ("Tuning", "cross-validation", f"{p.get('train.cross_val_n_fold')}-fold, {p.get('train.cross_val_type')} on the event indicator"),
+                ("Tuning", "objective", "sample-weighted mean over sites of the validation C-index of the global model"),
+                ("Imputation", "basic", p.get("imputation.imputation_algorithm")),
+                ("Imputation", "MICE", f"{params_of('central', 'cox', 'nofs', 'mice').get('imputation.imputation_algorithm')}, "
+                                       f"{params_of('central', 'cox', 'nofs', 'mice').get('imputation.regression_model')}, "
+                                       f"{params_of('central', 'cox', 'nofs', 'mice').get('imputation.maxit')} sweeps"),
+                ("Feature selection", "score test", f"method {params_of('central', 'cox', 'score', 'basic').get('feature_selection.fs_method')}, "
+                                                   f"mode {params_of('central', 'cox', 'score', 'basic').get('feature_selection.fs_selected_modes')}, "
+                                                   f"fraction {params_of('central', 'cox', 'score', 'basic').get('feature_selection.fs_top_p_options')} "
+                                                   f"(10 of 33), minimum events per site {params_of('central', 'cox', 'score', 'basic').get('feature_selection.fs_min_cases')}"),
+                ("Feature selection", "mutual information", f"method {params_of('central', 'cox', 'mi', 'basic').get('feature_selection.fs_method')}, "
+                                                           f"mode {params_of('central', 'cox', 'mi', 'basic').get('feature_selection.fs_selected_modes')}, "
+                                                           f"score {params_of('central', 'cox', 'mi', 'basic').get('feature_selection.fs_divided')}, "
+                                                           f"fraction {params_of('central', 'cox', 'mi', 'basic').get('feature_selection.fs_top_p_options')}"),
+                ("Explanation", "background", f"{p.get('shap.clustering_num_clusters')} fuzzy c-means centres, at most {p.get('shap.clustering_max_number_rounds')} rounds, "
+                                              f"tolerance {p.get('shap.clustering_epsilon')}, fuzziness {p.get('shap.clustering_lambda_factor')}"),
+                ("Explanation", "feature binning", f"{p.get('shap.shap_privacy_bins')} bins between the {p.get('shap.shap_outlier_percentile')}th and "
+                                                   f"{100 - float(p.get('shap.shap_outlier_percentile', 5))}th percentiles; sites with fewer than "
+                                                   f"{p.get('shap.shap_min_samples_for_boundaries')} records excluded from the boundaries")]
+    rows += [{"Section": s, "Parameter": k, "Value": str(v)} for s, k, v in settings if v is not None]
     if rows:
         w.table(pd.DataFrame(rows), "TableS2_search_spaces", "Table S2. Hyper-parameter search spaces (Optuna, 50 trials, seed 42, 5-fold stratified "
                 "cross-validation) and run settings, as logged by the framework.", where="supplementary")
+    # S12 data-quality checks per node (from the data-quality stage of one federated run; identical in every run)
+    r = runs[(runs["role"] == "federated") & (runs["model"] == "cox") & (runs["fs"] == "nofs") & (runs["imputation"] == "basic")]
+    dq_root = final / "runs" / r.iloc[0]["run_name"] / "data_quality" if len(r) else None
+    if dq_root is not None and dq_root.exists():
+        dq_rows = []
+        for a in AREAS:
+            try:
+                cols_t = json.load(open(dq_root / a / "columns_tests_results.json"))
+                rows_t = json.load(open(dq_root / a / "rows_tests_results.json"))
+                ct = pd.DataFrame(cols_t["data"], columns=cols_t["columns"])
+                ct = ct[ct["columns_names"].isin(FEATURES)]
+                rt = pd.DataFrame(rows_t["data"], columns=rows_t["columns"]).iloc[0]
+                n = int(rt["row_count"])
+                miss = ct.set_index("columns_names")["missing_counts"].astype(float)
+                worst = miss.idxmax()
+                dq_rows.append({"Node": AREA_LABEL[a], "Records": n, "Duplicate records": "none" if rt["duplicate_rows"] == "pass" else str(rt["duplicate_rows"]),
+                                "Predictors present with the expected type": f"{int((ct['expected_columns'] == 'pass').sum())} of {len(ct)}",
+                                "Predictors with values outside the admissible range": int((ct["check_rules"] != "pass").sum()),
+                                "Predictors with missing values": int((miss > 0).sum()),
+                                "Missing cells, % of predictor cells": round(100 * miss.sum() / (n * len(ct)), 1),
+                                "Predictor with most missing values": f"{flabel(worst)} ({100 * miss[worst] / n:.0f}%)"})
+            except Exception as e:  # noqa: BLE001
+                LOGGER.warning("data-quality table, node %s: %s", a, e)
+        if dq_rows:
+            w.table(pd.DataFrame(dq_rows), "TableS12_data_quality", "Table S12. Data-quality checks of the federated data-quality stage, per node: "
+                    "records, duplicates, presence and type of the 33 predictors, admissible-range violations and missing values.",
+                    where="supplementary", decimals=1)
     keep = ["run_name", "role", "node", "model", "fs", "imputation", "n_features", "derivation_weighted_c", "selected_features"]
     w.table(runs[keep].sort_values(["role", "node", "model", "fs", "imputation"]), "TableS5_derivation", "Table S5. Derivation results of every run: "
             "best-trial sample-weighted cross-validated C-index and the features used by the final model.", where="supplementary")
@@ -559,6 +635,7 @@ def supplementary_tables(w: Writer, final: Path, runs: pd.DataFrame, paired: pd.
         r = r[(r["model"] == "cox") & (r["fs"] == "score")]
         piv = r.pivot_table(index="rank", columns=["role", "node", "imputation"], values="feature", aggfunc="first")
         piv.columns = ["_".join(str(x) for x in c if str(x) not in ("", "nan")) for c in piv.columns]
+        piv = piv.apply(lambda col: col.map(flabel))
         w.table(piv, "TableS9_rankings", "Table S9. Score-test feature rankings (forward order) in the pooled arm, the federated arm and each node "
                 "alone, both imputations; identical across the three model families.", where="supplementary", index=True)
     a = agree[agree["comparison"].isin(["arm", "fs", "standalone_vs_central", "standalone_vs_federated", "imputation"])]
