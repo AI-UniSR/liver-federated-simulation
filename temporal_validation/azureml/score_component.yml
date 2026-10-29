@@ -3,15 +3,17 @@ type: command
 
 name: temporal_score_experiment
 display_name: Temporal validation - score the models of an MLflow experiment
-version: 2
+version: 3
 description: >
-  For every FINISHED parent run of the source MLflow experiment that has a best_optuna_model
+  For every FINISHED parent run of the source MLflow experiment(s) that has a best_optuna_model
   child: loads the logged pipeline, scores the temporal cohort with the global model and with
   every ensemble member (overall and per federated area), computes Harrell C, Uno C,
-  time-dependent AUC, IBS and bootstrap CIs (PRECISION-AI conventions), reads the
-  derivation-side numbers (weighted CV objective, per-site CV matrix, run and best-trial
-  parameters) from the same run, writes tables and figures to the output folder and logs
-  params, metrics and all artifacts on this job's MLflow run.
+  time-dependent AUC, IBS and bootstrap CIs (PRECISION-AI conventions) and the calibration of
+  the global model (in-the-large and slope at 6, 12 and 18 months), reads the derivation side from
+  the same run (weighted CV objective, per-site CV matrix, every Optuna trial, the
+  feature-selection tables, run and best-trial parameters), labels each run with its role
+  (central / federated / standalone + node, from the 'clients' parameter), writes tables and
+  figures to the output folder and logs params, metrics and all artifacts on this job's MLflow run.
 
 inputs:
   cohort_dir:
@@ -22,7 +24,7 @@ inputs:
     description: Federated node data folder (central/original/data.csv sets the derivation follow-up bound)
   experiment_name:
     type: string
-    description: Source MLflow experiment whose finished runs are scored
+    description: Source MLflow experiment(s) whose finished runs are scored; several names separated by ';'
   run_names:
     type: string
     default: all
@@ -47,6 +49,14 @@ inputs:
   ibs_horizon:
     type: number
     default: 12
+  calibration_horizons:
+    type: string
+    default: "6 12 18"
+    description: Calibration of the global model at these months (space separated; those above tau skipped)
+  shap_patients:
+    type: integer
+    default: 100
+    description: Cohort subsample for the SHAP importance table of the global model (0 = skip)
   ipcw_from:
     type: string
     default: evaluated
@@ -68,9 +78,11 @@ outputs:
     type: uri_folder
     description: >
       cohort/ (prepared cohort + summary), runs/<run>/ (temporal_metrics.csv, temporal_harrell_c_matrix.csv,
-      derivation_cv_cindex_matrix.csv, predictions.csv, model_info.json, figures/), summary_runs.csv,
-      temporal_metrics_all_runs.csv, derivation_runs.csv, derivation_cv_cindex_all_runs.csv,
-      summary_derivation_vs_temporal.png, run_info.json (run ids, library versions, skipped/failed runs)
+      derivation_cv_cindex_matrix.csv, predictions.csv, calibration.csv, trials.csv, feature_selection_*.csv
+      when logged, model_info.json, figures/), summary_runs.csv (one row per run: role, node, design,
+      selected features, derivation C, temporal metrics, calibration), temporal_metrics_all_runs.csv,
+      derivation_runs.csv, derivation_cv_cindex_all_runs.csv, summary_derivation_vs_temporal.png,
+      run_info.json (run ids, library versions, skipped/failed runs)
 
 code: ..
 
@@ -89,6 +101,8 @@ command: >-
   --horizons ${{inputs.horizons}}
   --horizon-max ${{inputs.horizon_max}}
   --ibs-horizon ${{inputs.ibs_horizon}}
+  --calibration-horizons ${{inputs.calibration_horizons}}
+  --shap-patients ${{inputs.shap_patients}}
   --ipcw-from ${{inputs.ipcw_from}}
   --min-subset ${{inputs.min_subset}}
   --raw-data-label "${{inputs.raw_data_label}}"

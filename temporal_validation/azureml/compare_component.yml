@@ -1,0 +1,40 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+type: command
+
+name: temporal_compare_runs
+display_name: Temporal validation - compare the scored runs
+version: 1
+description: >
+  Copies the scoring output into the final folder and adds tables/ and report.md: paired bootstrap
+  differences of the temporal Harrell C for every pair of runs that differs in one design factor
+  (central vs federated, feature-selection method, imputation, node alone vs federation on the node's
+  own area and on the whole cohort), feature-ranking agreement on the same pairs, derivation best-trial
+  and trial-paired tables, standalone matrix, calibration summary. Download this step's output:
+  it holds everything.
+
+inputs:
+  results:
+    type: uri_folder
+    description: Output of temporal_score_experiment
+  bootstrap:
+    type: integer
+    default: 1000
+  seed:
+    type: integer
+    default: 42
+
+outputs:
+  final:
+    type: uri_folder
+    description: results of the score step + tables/ + report.md
+
+code: ..
+
+environment: azureml:optuna-env:22
+
+command: >-
+  python compare_runs.py
+  --results ${{inputs.results}}
+  --output-dir ${{outputs.final}}
+  --bootstrap ${{inputs.bootstrap}}
+  --seed ${{inputs.seed}}

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Submit the temporal validation pipeline and (optionally) wait and download its results.
 #
-#   azureml/run_pipeline.sh "Federated Experiment October 23rd"                 # all finished runs
+#   azureml/run_pipeline.sh "Federated Experiment Final; Standalone Final"      # all finished runs of both experiments
 #   azureml/run_pipeline.sh "Federated Experiment October 23rd" "central_gradient_nofs_basic federated_gradient_nofs_basic"
-#   DOWNLOAD_DIR=out/temporal_oct23 azureml/run_pipeline.sh "Federated Experiment October 23rd"
+#   DOWNLOAD_DIR=out/final azureml/run_pipeline.sh "Federated Experiment Final; Standalone Final"
+#
+# The laptop cannot upload a new code snapshot (no blob permission): submit from the compute instance after
+# copying temporal_validation/ there (see README, section 4).
 #
 # Any extra --set overrides can be passed through EXTRA_SET, e.g. EXTRA_SET="--set inputs.bootstrap=200".
 set -euo pipefail
@@ -24,13 +27,18 @@ if [ -n "${DOWNLOAD_DIR:-}" ]; then
   STATUS=$(az ml job show -n "$JOB_NAME" -g "$RG" -w "$WS" --query status -o tsv)
   echo "status: $STATUS"
   mkdir -p "$DOWNLOAD_DIR"
-  # the results live on the scoring step (its output 'results' = cohort, per-run tables, figures, summaries);
-  # 'az ml job download' on the pipeline job itself returns only the pipeline logs. On a Failed job the
-  # tables of the runs that did score are still there (see run_info.json 'failures'), so download anyway.
-  STEP=$(az ml job list -g "$RG" -w "$WS" --parent-job-name "$JOB_NAME" --query "[?display_name=='score'].name" -o tsv)
+  # everything lives on the compare step (its output 'final' = the score output + tables/ + report.md);
+  # 'az ml job download' on the pipeline job itself returns only the pipeline logs. If the compare step
+  # did not run (score failed), fall back to the score step's output 'results'.
+  STEP=$(az ml job list -g "$RG" -w "$WS" --parent-job-name "$JOB_NAME" --query "[?display_name=='compare' && status=='Completed'].name" -o tsv)
+  OUT=final
+  if [ -z "$STEP" ]; then
+    STEP=$(az ml job list -g "$RG" -w "$WS" --parent-job-name "$JOB_NAME" --query "[?display_name=='score'].name" -o tsv)
+    OUT=results
+  fi
   if [ -n "$STEP" ]; then
-    az ml job download -n "$STEP" -g "$RG" -w "$WS" --output-name results --download-path "$DOWNLOAD_DIR" \
-      && echo "downloaded step $STEP to $DOWNLOAD_DIR/named-outputs/results" \
+    az ml job download -n "$STEP" -g "$RG" -w "$WS" --output-name "$OUT" --download-path "$DOWNLOAD_DIR" \
+      && echo "downloaded step $STEP to $DOWNLOAD_DIR/named-outputs/$OUT" \
       || echo "download of step $STEP failed (no output yet?)"
   fi
   if [ "$STATUS" != "Completed" ]; then

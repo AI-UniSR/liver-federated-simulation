@@ -4,11 +4,14 @@ type: pipeline
 display_name: Temporal validation of SraceFed models
 experiment_name: temporal-validation
 description: >
-  Two steps: (1) prepare the temporal validation cohort from the raw registry export with the
-  verified centre->area table; (2) score every finished run of the source MLflow experiment
-  (global model and ensemble members, overall and per area), read the derivation-side numbers
-  from the same runs, and log tables, figures and metrics on the scoring job. Download the
-  results from the scoring step: az ml job download -n <score step> --output-name results.
+  Three steps: (1) prepare the temporal validation cohort from the raw registry export with the
+  verified centre->area table; (2) score every finished run of the source MLflow experiment(s)
+  (global model and ensemble members, overall and per area, calibration), read the derivation
+  side (best trial, all trials, per-site CV, feature-selection tables) from the same runs,
+  calibration at 6/12/18 months;
+  (3) compare the runs (paired bootstrap for every pair differing in one design factor,
+  ranking agreement, standalone matrix, report.md). Download the compare step's output
+  'final': az ml job download -n <compare step> --output-name final. It holds everything.
   Data assets and environment are pinned; change the pins here when a new version is intended.
 
 settings:
@@ -25,14 +28,17 @@ inputs:
   # lineage labels, logged as job params and written to run_info.json (keep in sync with the paths above)
   raw_data_label: "file-validation-btc-csv:5"
   data_folder_label: "federated-learning-data-folder:2"
-  experiment_name: "Federated Experiment October 22nd"
+  experiment_name: "Federated Experiment Final; Standalone Final"   # one or more MLflow experiments, ';'-separated
   run_names: all   # or a space/comma separated list of parent run names (never an empty string: Azure ML drops it)
   source_nodes_version: v2
-  bootstrap: 500
+  bootstrap: 500        # per-run CIs (score step)
+  bootstrap_pairs: 1000 # paired comparisons (compare step)
   seed: 42
   horizons: "6 12 18 24"
   horizon_max: 24
   ibs_horizon: 12
+  calibration_horizons: "6 12 18"
+  shap_patients: 100
   ipcw_from: evaluated
   min_subset: 20
 
@@ -62,9 +68,19 @@ jobs:
       horizons: ${{parent.inputs.horizons}}
       horizon_max: ${{parent.inputs.horizon_max}}
       ibs_horizon: ${{parent.inputs.ibs_horizon}}
+      calibration_horizons: ${{parent.inputs.calibration_horizons}}
+      shap_patients: ${{parent.inputs.shap_patients}}
       ipcw_from: ${{parent.inputs.ipcw_from}}
       min_subset: ${{parent.inputs.min_subset}}
       raw_data_label: ${{parent.inputs.raw_data_label}}
       data_folder_label: ${{parent.inputs.data_folder_label}}
+
+  compare:
+    type: command
+    component: file:./compare_component.yml
+    inputs:
+      results: ${{parent.jobs.score.outputs.results}}
+      bootstrap: ${{parent.inputs.bootstrap_pairs}}
+      seed: ${{parent.inputs.seed}}
     outputs:
-      results: ${{parent.outputs.results}}
+      final: ${{parent.outputs.results}}
