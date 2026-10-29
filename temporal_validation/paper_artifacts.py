@@ -72,6 +72,11 @@ class Writer:
 
     def figure(self, fig, name: str, caption: str, where="main"):
         out = self.root / where / name
+        try:
+            from paper_style import npj_panels
+            npj_panels(fig)
+        except Exception as e:  # noqa: BLE001
+            LOGGER.warning("figure style not applied to %s: %s", name, e)
         fig.savefig(out.with_suffix(".png"), dpi=300, bbox_inches="tight")
         fig.savefig(out.with_suffix(".svg"), bbox_inches="tight")
         fig.savefig(out.with_suffix(".pdf"), bbox_inches="tight")
@@ -289,7 +294,7 @@ def fig2_discrimination(w: Writer, runs: pd.DataFrame, imp: str, name: str, wher
         for _, r in solo.iterrows():
             big = r["node"] == "italy_north"
             ax.plot(r["temporal_harrell_c"], yi, marker="o", ms=5 if big else 4, color="#444444" if big else "#aaaaaa", ls="none",
-                    label=("node alone (italy_north)" if big else "node alone") if yi == y[0] and (big or r["node"] == "americas") else None)
+                    label=("node alone (Italy north)" if big else "node alone") if yi == y[0] and (big or r["node"] == "americas") else None)
     ax.set_yticks(y); ax.set_yticklabels([f"{MODEL_LABEL[m]}\n{FS_LABEL[f]}" for m, f in rows], fontsize=8)
     ax.axvline(0.5, color="grey", lw=0.6, ls=":")
     ax.set_xlabel("Harrell C-index: temporal validation cohort (filled, 95% CI) and derivation cross-validation (hollow)")
@@ -660,6 +665,13 @@ def supplementary_figures(w: Writer, final: Path, runs: pd.DataFrame, nodes: dic
 def build(final: Path, data_folder: Path | None, centres_csv: Path | None):
     import matplotlib
     matplotlib.use("Agg")
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from paper_style import setup_fonts
+        LOGGER.info("figure font: %s", setup_fonts())
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("figure fonts not set: %s", e)
     w = Writer(final / "paper")
     numbers = {}
     runs = pd.read_csv(final / "tables" / "runs.csv").fillna({"node": ""})
