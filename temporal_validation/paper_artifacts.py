@@ -502,7 +502,8 @@ def fig5_shap(w: Writer, final: Path, runs: pd.DataFrame, numbers: dict):
         if t.exists():
             imp_tabs[role] = pd.read_csv(t).set_index("feature")["mean_abs_shap"]
     if len(imp_tabs) == 2:
-        feats = list(imp_tabs["central"].sort_values(ascending=False).index)
+        both = pd.concat(imp_tabs, axis=1).fillna(0)  # union of the two models' inputs, ordered by the larger importance
+        feats = list(both.max(axis=1).sort_values(ascending=False).index)
         fig, ax = plt.subplots(figsize=(6, 0.35 * len(feats) + 1.2))
         y = np.arange(len(feats))
         ax.barh(y - 0.18, [imp_tabs["central"].get(x, 0) for x in feats], height=0.36, color=ARM_COLOR["central"], label="pooled")
