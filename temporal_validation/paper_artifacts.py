@@ -311,12 +311,12 @@ def fig1_design(w: Writer, nodes: dict, cohort: pd.DataFrame, centres: pd.DataFr
     ax = fig.add_subplot(gs[1, 1]); ax.axis("off"); ax.set_xlim(0, 100); ax.set_ylim(0, 100)
     ax.text(0.5, 97, "(c) Evaluation on a later registry freeze", fontsize=10)
     per_area = cohort.groupby("area_federata").agg(n=("patient_number", "size"), deaths=("event", "sum"))
-    ax.add_patch(FancyBboxPatch((8, 58), 84, 26, boxstyle="round,pad=0.5", fc="#fbf1f0", ec="#c0504d", lw=1))
     tflow = ""
     if flow.get("validation_rows"):
-        tflow = (f"\n{flow['validation_rows']} validation records: {flow.get('validation_duplicates', 0)} re-entries of development patients "
-                 f"and {flow.get('validation_other_excluded', 0)} with unusable follow-up removed")
-    ax.text(50, 78, f"Temporal validation cohort: {len(cohort)} patients, {int(cohort['event'].sum())} deaths\n"
+        tflow = (f"\n{flow['validation_rows']} records in the validation export; removed {flow.get('validation_duplicates', 0)} re-entries\n"
+                 f"of development patients and {flow.get('validation_other_excluded', 0)} with unusable follow-up")
+    ax.add_patch(FancyBboxPatch((8, 54 if tflow else 58), 84, 30 if tflow else 26, boxstyle="round,pad=0.5", fc="#fbf1f0", ec="#c0504d", lw=1))
+    ax.text(50, 76 if tflow else 78, f"Temporal validation cohort: {len(cohort)} patients, {int(cohort['event'].sum())} deaths\n"
             f"later data freeze, no patient in common with derivation{tflow}", ha="center", va="center", fontsize=8 if tflow else 8.5)
     xs = np.linspace(16, 84, len(AREAS))
     for x, a in zip(xs, AREAS):
