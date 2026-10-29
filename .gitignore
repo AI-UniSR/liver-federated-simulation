@@ -1,0 +1,4 @@
+temporal_validation/resources/anagrafica_pazienti_centri_aree.csv
+__pycache__/
+*.pyc
+out/

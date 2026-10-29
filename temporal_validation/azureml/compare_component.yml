@@ -23,7 +23,7 @@ inputs:
     description: Federated node data folder (Table 1, Kaplan-Meier and missingness of the paper items)
   bootstrap:
     type: integer
-    default: 1000
+    default: 2000
   seed:
     type: integer
     default: 42

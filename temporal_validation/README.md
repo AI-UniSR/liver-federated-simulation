@@ -151,6 +151,20 @@ forest plots, calibration curves, Kaplan-Meier by node and area, SHAP beeswarm m
 `--data-folder` (node data) and the centre table (`--centres-csv`, default `resources/centri_aree_federate.csv`);
 the docx output needs `python-docx` (environment `optuna-env:23`).
 
+Reporting follows TRIPOD+AI and the cluster-specific items of TRIPOD-Cluster: Table 1 gives the derivation cohort
+per node and the temporal cohort per area (patients, deaths, events per predictor, treatment-start period from the
+prepared cohort's `treatment_start_month`, follow-up, key predictors, missing cells); the per-area C-indices carry
+their bootstrap intervals (`summary_runs.csv`: `temporal_c_<area>_ci_low/high`; Fig. S1 is a forest plot); the
+per-node results of the framework's data-quality stage are a supplementary table (`TableS12_data_quality`); the
+patient flow (registry rows, re-entries removed, unusable follow-up, centre not assignable) is printed in Fig. 1
+from the prepare step's summary and, when present, the patient register (`numbers.json`, key `flow`). Figures are
+styled for the journal by `paper_style.py` (sans-serif typeface, lower-case bold panel letters, editable text in
+the vector files); `paper_variants.py` draws the alternative views of the three-arm comparison.
+
+Restricted file: `resources/anagrafica_pazienti_centri_aree.csv` (one row per patient of the registry with centre
+and inclusion status) is not distributed with the repository. Without it the prepare step skips the patient-level
+cross-check and the paper step omits the derivation side of the patient flow; everything else is unchanged.
+
 ## 4. Azure ML pipeline (`azureml/`)
 
 The three scripts packaged as command components (`prepare_component.yml`,

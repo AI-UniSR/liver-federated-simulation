@@ -3,7 +3,7 @@ type: command
 
 name: temporal_score_experiment
 display_name: Temporal validation - score the models of an MLflow experiment
-version: 3
+version: 4
 description: >
   For every FINISHED parent run of the source MLflow experiment(s) that has a best_optuna_model
   child: loads the logged pipeline, scores the temporal cohort with the global model and with

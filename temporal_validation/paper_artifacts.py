@@ -128,7 +128,14 @@ def cohort_stats(df: pd.DataFrame) -> dict:
     def pct(col, value=1):
         v = x[col].dropna()
         return f"{int((v == value).sum())} ({100 * (v == value).mean():.1f}%)" if len(v) else ""
+    period = ""
+    if "treatment_start_month" in df.columns and df["treatment_start_month"].notna().any():
+        p = df["treatment_start_month"].dropna().astype(str)
+        period = f"{p.min()} to {p.max()}"
+    n_pred = len([c for c in FEATURES if c in x.columns])
     s = {"Patients": str(n), "Deaths": f"{int(x['event'].sum())} ({100 * x['event'].mean():.1f}%)",
+         "Events per predictor": f"{x['event'].sum() / n_pred:.1f}" if n_pred else "",
+         "Treatment start, first to last (year-month)": period,
          "Median observed follow-up, months": f"{x['tte'].median():.1f}", "Median OS (Kaplan-Meier), months": f"{km_median(x['tte'], x['event']):.1f}",
          "Age, years": med("age"), "Male sex": pct("sex", 1), "ECOG >= 1": pct("ps ecog", 1),
          "Metastatic disease": pct("locally advanced/metastatic", 2),
@@ -160,6 +167,32 @@ def full_table1_row(df: pd.DataFrame) -> dict:
         elif len(v):
             out[flabel(c)] = f"{v.median():.2f} ({v.quantile(.25):.2f}-{v.quantile(.75):.2f}); missing {x[c].isna().sum()}"
     return out
+
+
+def patient_flow(final: Path, centres_csv) -> dict:
+    """Numbers of the patient flow (TRIPOD-Cluster 10a): validation side from the prepare step's summary,
+    derivation side from the patient register next to the centre table when available (restricted file)."""
+    flow = {}
+    s = final / "cohort" / "temporal_cohort_prepared.summary.json"
+    if s.exists():
+        try:
+            j = json.load(open(s))
+            sc = j.get("status_counts", {})
+            flow.update(validation_rows=int(j.get("n_validation_rows", 0)), validation_usable=int(j.get("n_usable", 0)),
+                        validation_duplicates=int(sc.get("duplicate_of_training", 0)),
+                        validation_other_excluded=int(sum(v for k, v in sc.items() if k not in ("ok", "duplicate_of_training"))))
+        except Exception as e:  # noqa: BLE001
+            LOGGER.warning("flow: prepare summary not readable: %s", e)
+    reg = Path(centres_csv).with_name("anagrafica_pazienti_centri_aree.csv") if centres_csv else None
+    if reg is not None and reg.exists():
+        try:
+            ana = pd.read_csv(reg, sep=";", dtype=str)
+            tr = ana[ana["coorte"] == "training"]
+            flow.update(derivation_rows=int(len(tr)), derivation_included=int((tr["stato"] == "incluso").sum()),
+                        derivation_excluded=int((tr["stato"] != "incluso").sum()))
+        except Exception as e:  # noqa: BLE001
+            LOGGER.warning("flow: patient register not readable: %s", e)
+    return flow
 
 
 def load_nodes(data_folder: Path) -> dict:
@@ -268,7 +301,10 @@ def fig1_design(w: Writer, nodes: dict, cohort: pd.DataFrame, centres: pd.DataFr
             lab += f"\n{ncent[a][0]} centres, {ncent[a][1]} countr{'y' if ncent[a][1] == 1 else 'ies'}"
         ax.text(x, y - r - 2.5, lab, ha="center", va="top", fontsize=7.5)
     total = sum(sizes.values()); tev = sum(events.values())
-    ax.text(50, 84, f"Pooled arm: all {total} patients, {tev} deaths, in one place\nFederated arm: the five nodes + server (ensemble of node models)\n"
+    flow = numbers.get("flow", {})
+    deriv_flow = (f"Development cohort of the registry: {flow['derivation_rows']} patients, {flow['derivation_excluded']} excluded "
+                  f"(centre not assignable to a node)\n" if flow.get("derivation_rows") else "")
+    ax.text(50, 84, f"{deriv_flow}Pooled arm: all {total} patients, {tev} deaths, in one place\nFederated arm: the five nodes + server (ensemble of node models)\n"
             "Single-centre arm: each node runs the pipeline alone", ha="center", va="center", fontsize=8,
             bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="#999999", lw=0.8))
     # (c) evaluation
@@ -276,8 +312,12 @@ def fig1_design(w: Writer, nodes: dict, cohort: pd.DataFrame, centres: pd.DataFr
     ax.text(0.5, 97, "(c) Evaluation on a later registry freeze", fontsize=10)
     per_area = cohort.groupby("area_federata").agg(n=("patient_number", "size"), deaths=("event", "sum"))
     ax.add_patch(FancyBboxPatch((8, 58), 84, 26, boxstyle="round,pad=0.5", fc="#fbf1f0", ec="#c0504d", lw=1))
+    tflow = ""
+    if flow.get("validation_rows"):
+        tflow = (f"\n{flow['validation_rows']} validation records: {flow.get('validation_duplicates', 0)} re-entries of development patients "
+                 f"and {flow.get('validation_other_excluded', 0)} with unusable follow-up removed")
     ax.text(50, 78, f"Temporal validation cohort: {len(cohort)} patients, {int(cohort['event'].sum())} deaths\n"
-            "later data freeze, no patient in common with derivation", ha="center", va="center", fontsize=8.5)
+            f"later data freeze, no patient in common with derivation{tflow}", ha="center", va="center", fontsize=8 if tflow else 8.5)
     xs = np.linspace(16, 84, len(AREAS))
     for x, a in zip(xs, AREAS):
         if a in per_area.index:
@@ -290,7 +330,7 @@ def fig1_design(w: Writer, nodes: dict, cohort: pd.DataFrame, centres: pd.DataFr
     for i, t in enumerate(items):
         ax.text(6, 48 - 9 * i, "• " + t, fontsize=8, va="center", wrap=True)
     fig.tight_layout()
-    w.figure(fig, "Fig1_framework_and_design", "Framework and study design. (a) The stages of the federated pipeline: data quality checks, "
+    w.figure(fig, "Fig1_framework_and_design", "Framework and study design. The patient flow of both cohorts is printed in panels b and c. (a) The stages of the federated pipeline: data quality checks, "
              "federated imputation, federated feature selection (summed site-stratified Cox score statistics), hyper-parameter tuning with a "
              "federated objective, node models combined into a sample-weighted ensemble, cross-site evaluation, privacy-preserving SHAP and "
              "MLflow logging. (b) The derivation cohort of the registry split into five geographic nodes (circle area proportional to the "
@@ -662,6 +702,7 @@ def supplementary_figures(w: Writer, final: Path, runs: pd.DataFrame, nodes: dic
     fig, axes = plt.subplots(1, 5, figsize=(16, 4.5), sharey=True)
     rows = [(m, f) for m in ("cox", "gradient", "rsf") for f in ("nofs", "score")]
     y = np.arange(len(rows))[::-1]
+    n_area = cohort.groupby("area_federata").size() if "area_federata" in cohort.columns else {}
     for ax, a in zip(axes, AREAS):
         for yi, (m, f) in zip(y, rows):
             for role, marker, dy in (("central", "s", 0.2), ("federated", "D", 0), ("standalone", "o", -0.2)):
@@ -669,14 +710,19 @@ def supplementary_figures(w: Writer, final: Path, runs: pd.DataFrame, nodes: dic
                 if role == "standalone":
                     sel = sel[sel["node"] == a]
                 if len(sel):
-                    ax.plot(sel.iloc[0][f"temporal_c_{a}"], yi + dy, marker=marker, color=ARM_COLOR[role], ls="none", ms=5,
+                    r = sel.iloc[0]
+                    lo, hi = r.get(f"temporal_c_{a}_ci_low", np.nan), r.get(f"temporal_c_{a}_ci_high", np.nan)
+                    if pd.notna(lo) and pd.notna(hi):  # forest plot: per-area bootstrap CI (TRIPOD-Cluster 13a)
+                        ax.plot([lo, hi], [yi + dy, yi + dy], color=ARM_COLOR[role], lw=1, solid_capstyle="butt")
+                    ax.plot(r[f"temporal_c_{a}"], yi + dy, marker=marker, color=ARM_COLOR[role], ls="none", ms=5,
                             label={"central": "pooled", "federated": "federated", "standalone": "node alone"}[role] if (a == AREAS[0] and yi == y[0]) else None)
-        ax.set_title(AREA_LABEL[a], fontsize=9); ax.axvline(0.5, color="grey", lw=0.5, ls=":"); ax.set_xlim(0.4, 0.85); ax.grid(axis="x", lw=0.3, alpha=0.5)
+        title = f"{AREA_LABEL[a]} (n = {int(n_area[a])})" if a in n_area else AREA_LABEL[a]
+        ax.set_title(title, fontsize=9); ax.axvline(0.5, color="grey", lw=0.5, ls=":"); ax.set_xlim(0.4, 0.9); ax.grid(axis="x", lw=0.3, alpha=0.5)
     axes[0].set_yticks(y); axes[0].set_yticklabels([f"{MODEL_LABEL[m]}, {FS_LABEL[f]}" for m, f in rows], fontsize=7)
-    axes[0].legend(fontsize=7, frameon=False, loc="lower left"); axes[2].set_xlabel("Harrell C-index on the temporal patients of the area")
+    axes[0].legend(fontsize=7, frameon=False, loc="lower left"); axes[2].set_xlabel("Harrell C-index on the temporal patients of the area (95% bootstrap CI)")
     fig.tight_layout()
     w.figure(fig, "FigS1_per_area", "Figure S1. Harrell C-index on the temporal patients of each area for the pooled model, the federated ensemble "
-             "and the node's own model (basic imputation).", where="supplementary")
+             "and the node's own model (basic imputation), with 95% bootstrap confidence intervals.", where="supplementary")
     # S3 calibration curves of every main-grid model (basic + mice, nofs + score)
     sel = runs[(runs["role"].isin(["central", "federated"])) & (runs["fs"].isin(["nofs", "score"]))].sort_values(["model", "fs", "imputation", "role"])
     n = len(sel); ncol = 6; nrow = int(np.ceil(n / ncol))
@@ -758,6 +804,7 @@ def build(final: Path, data_folder: Path | None, centres_csv: Path | None):
     cohort = pd.read_csv(final / "cohort" / "temporal_cohort_prepared.csv")
     nodes = load_nodes(data_folder) if data_folder else {}
     centres = pd.read_csv(centres_csv, sep=";") if centres_csv and Path(centres_csv).exists() else None
+    numbers["flow"] = patient_flow(final, centres_csv)
     for step in (lambda: cohorts_tables(w, nodes, cohort, centres, numbers),
                  lambda: fig1_design(w, nodes, cohort, centres, numbers),
                  lambda: fig2_discrimination(w, runs, "basic", "Fig2_discrimination", "main", numbers),

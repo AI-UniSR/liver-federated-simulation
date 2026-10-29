@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the paper and this repository."
+title: "liver-federated-simulation: validation pipeline and experiment configurations for the SraceFed biliary tract cancer study"
+type: software
+authors:
+  - family-names: Corvaglia
+    given-names: Andrea
+    affiliation: "S-RACE (San Raffaele Ai CEnter), University Vita-Salute San Raffaele, Milan, Italy"
+# add the other authors of the paper here
+repository-code: "https://github.com/AI-UniSR/liver-federated-simulation"
+license: "TBD"   # to be chosen before archiving (e.g. Apache-2.0 or MIT)
+version: "1.0.0"
+date-released: "2026-10-29"
+preferred-citation:
+  type: article
+  title: "End-to-end federated learning for prognostic survival models in an international biliary tract cancer registry"
+  authors:
+    - family-names: Corvaglia
+      given-names: Andrea
+  journal: "submitted"
+  year: 2026

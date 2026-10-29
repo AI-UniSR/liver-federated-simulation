@@ -179,6 +179,8 @@ def main() -> None:
             columns={"patient number": "patient_number", "center": "centre_label"}), feats], axis=1)
     out["patient_number"] = out["patient_number"].astype(int)
     out["event"] = out["event"].astype(int)
+    # treatment start (month precision) kept for the per-area accrual periods of Table 1 (TRIPOD-Cluster 10b)
+    out["treatment_start_month"] = kept["cgi start date"].apply(parse_mixed_date).dt.strftime("%Y-%m").values
     out = out.sort_values("patient_number").reset_index(drop=True)
 
     import hashlib
@@ -201,7 +203,14 @@ def main() -> None:
         "coding_differences_vs_training": coding,
     }
 
-    # 5. optional cross-check against the patient registry
+    summary["treatment_start_period"] = {a: [str(g["treatment_start_month"].min()), str(g["treatment_start_month"].max())]
+                                         for a, g in out.groupby("area_federata")}
+    summary["treatment_start_period"]["all"] = [str(out["treatment_start_month"].min()), str(out["treatment_start_month"].max())]
+
+    # 5. optional cross-check against the patient registry (restricted file: skipped when absent)
+    if args.anagrafica and not Path(args.anagrafica).exists():
+        LOGGER.warning("patient register %s not found: cross-check skipped", args.anagrafica)
+        args.anagrafica = None
     if args.anagrafica:
         ana = pd.read_csv(args.anagrafica, sep=";", dtype=str)
         ana = ana[ana["coorte"] == "validation"]

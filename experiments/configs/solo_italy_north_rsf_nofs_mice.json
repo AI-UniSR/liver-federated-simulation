@@ -1,0 +1,89 @@
+{
+    "debug": true,
+    "seed": 42,
+    "data_quality": {
+        "dq_activate": true,
+        "dq_verbose": true,
+        "dq_compute_global_stats": true,
+        "dq_extra_task_kaplan_meier_enable": true,
+        "dq_extra_task_kaplan_meier_tick_nbins": 5,
+        "dq_extra_task_kaplan_meier_manual_ticks": [
+            0,
+            6,
+            12,
+            18,
+            24
+        ],
+        "dq_extra_task_table1_enable": true,
+        "dq_extra_task_table1_compressed": false,
+        "dq_extra_task_table1_top_n_categories": null,
+        "dq_extra_task_table1_selected_features": null
+    },
+    "imputation": {
+        "activate_imputation": true,
+        "imputation_algorithm": "FedIMPUTE_SingleMice",
+        "regression_model": "BayesianRidge",
+        "impute_cat_col": true,
+        "maxit": 10
+    },
+    "feature_selection": {
+        "fs_activate_research": false
+    },
+    "train": {
+        "cross_val_n_fold": 5,
+        "run_type": "optuna_train",
+        "cross_val_type": "stratified",
+        "num_tuning_round": 50,
+        "cross_test_n_fold": null,
+        "validation_size": null,
+        "test_size": null,
+        "nested_type": null
+    },
+    "model": {
+        "model_type": "sklearn_surv",
+        "model_subtype": "rsf",
+        "metric": "c-index",
+        "skip_ibs": false,
+        "model_params_space": {
+            "n_estimators": [
+                100,
+                300
+            ],
+            "max_depth": [
+                3,
+                10
+            ],
+            "min_samples_split": [
+                2,
+                10
+            ],
+            "min_samples_leaf": [
+                5,
+                20
+            ],
+            "max_features": [
+                "sqrt",
+                "log2",
+                null
+            ]
+        }
+    },
+    "mlflow": {
+        "activate_mlflow": true,
+        "subscription_id": "ab211f7b-463f-4833-9605-d260e596a35a",
+        "resource_group": "1fe41577-4b8d-412a-3055-3a18d9df3ee7",
+        "workspace_name": "1fe415774b8d412a30553a18d9df3ee7",
+        "experiment_name_prefix": "Standalone Final",
+        "display_name": "italy_north_rsf_nofs_mice"
+    },
+    "shap": {
+        "activate_shap": true,
+        "clustering_num_clusters": 40,
+        "clustering_max_number_rounds": 3,
+        "clustering_epsilon": 0.005,
+        "clustering_lambda_factor": 2.0,
+        "shap_privacy_bins": 20,
+        "shap_outlier_percentile": 5.0,
+        "shap_min_samples_for_boundaries": 20
+    }
+}

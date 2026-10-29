@@ -3,7 +3,7 @@ type: command
 
 name: temporal_prepare_cohort
 display_name: Temporal validation - prepare cohort
-version: 1
+version: 2
 description: >
   Builds the model-ready temporal validation cohort from the raw registry export (both cohorts,
   column 'coorte'): validation rows, sigla and federated area from the bundled centre table,

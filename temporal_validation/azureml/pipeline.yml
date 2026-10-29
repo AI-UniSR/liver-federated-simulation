@@ -32,7 +32,7 @@ inputs:
   run_names: all   # or a space/comma separated list of parent run names (never an empty string: Azure ML drops it)
   source_nodes_version: v2
   bootstrap: 500        # per-run CIs (score step)
-  bootstrap_pairs: 1000 # paired comparisons (compare step)
+  bootstrap_pairs: 2000 # paired comparisons (compare step); 2000 in the paper
   seed: 42
   horizons: "6 12 18 24"
   horizon_max: 24

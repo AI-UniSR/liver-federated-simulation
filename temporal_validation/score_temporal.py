@@ -820,6 +820,9 @@ def main():
         for a in AREAS:
             ga = t[(t["model"] == "global") & (t["subset"] == a)]
             row[f"temporal_c_{a}"] = ga["harrell_c"].values[0] if len(ga) else np.nan
+            for side in ("low", "high"):  # per-area bootstrap CI (TRIPOD-Cluster 13a)
+                col = f"harrell_c_ci_{side}"
+                row[f"temporal_c_{a}_ci_{side}"] = ga[col].values[0] if len(ga) and col in ga.columns else np.nan
         rows.append(row)
     summary = pd.DataFrame(rows).sort_values("run_name")
     summary.to_csv(out_root / "summary_runs.csv", index=False)
