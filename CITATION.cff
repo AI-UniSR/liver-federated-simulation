@@ -3,10 +3,10 @@ message: "If you use this code, please cite the paper and this repository."
 title: "liver-federated-simulation: validation pipeline and experiment configurations for the SraceFed biliary tract cancer study"
 type: software
 authors:
-  - family-names: Corvaglia
-    given-names: Andrea
-    affiliation: "S-RACE (San Raffaele Ai CEnter), University Vita-Salute San Raffaele, Milan, Italy"
-# add the other authors of the paper here
+  - name: "S-RACE (San Raffaele Ai CEnter), University Vita-Salute San Raffaele"
+    city: Milan
+    country: IT
+# individual authors to be added before archiving
 repository-code: "https://github.com/AI-UniSR/liver-federated-simulation"
 license: "TBD"   # to be chosen before archiving (e.g. Apache-2.0 or MIT)
 version: "1.0.0"
@@ -15,7 +15,6 @@ preferred-citation:
   type: article
   title: "End-to-end federated learning for prognostic survival models in an international biliary tract cancer registry"
   authors:
-    - family-names: Corvaglia
-      given-names: Andrea
+    - name: "S-RACE (San Raffaele Ai CEnter), University Vita-Salute San Raffaele"
   journal: "submitted"
   year: 2026

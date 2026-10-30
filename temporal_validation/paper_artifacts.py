@@ -124,9 +124,9 @@ def cohort_stats(df: pd.DataFrame) -> dict:
     x = df.apply(pd.to_numeric, errors="coerce")
     n = len(x)
 
-    def med(col):
+    def med(col, nd=1):
         v = x[col].dropna()
-        return f"{v.median():.1f} ({v.quantile(.25):.1f}-{v.quantile(.75):.1f})" if len(v) else ""
+        return f"{v.median():.{nd}f} ({v.quantile(.25):.{nd}f}-{v.quantile(.75):.{nd}f})" if len(v) else ""
 
     def pct(col, value=1):
         v = x[col].dropna()
@@ -135,7 +135,9 @@ def cohort_stats(df: pd.DataFrame) -> dict:
     if "treatment_start_month" in df.columns and df["treatment_start_month"].notna().any():
         p = df["treatment_start_month"].dropna().astype(str)
         period = f"{p.min()} to {p.max()}"
-    n_pred = len([c for c in FEATURES if c in x.columns])
+    feats = [c for c in FEATURES if c in x.columns]
+    n_pred = len(feats)
+    miss = x[feats].isna().mean()
     s = {"Patients": str(n), "Deaths": f"{int(x['event'].sum())} ({100 * x['event'].mean():.1f}%)",
          "Events per predictor": f"{x['event'].sum() / n_pred:.1f}" if n_pred else "",
          "Treatment start, first to last (year-month)": period,
@@ -143,9 +145,12 @@ def cohort_stats(df: pd.DataFrame) -> dict:
          "Age, years": med("age"), "Male sex": pct("sex", 1), "ECOG >= 1": pct("ps ecog", 1),
          "Metastatic disease": pct("locally advanced/metastatic", 2),
          "Intrahepatic location": pct("location - Intrahepatic", 1), "Previous surgery": pct("surgery", 1),
-         "Number of metastatic sites": med("number of met sites"), "CA19-9, U/mL": med("ca199"), "CEA, ng/mL": med("cea"),
+         "Number of metastatic sites": med("number of met sites", 0), "CA19-9, U/mL": med("ca199", 0), "CEA, ng/mL": med("cea"),
          "Albumin, g/dL": med("albumin"), "Neutrophils, x10^9/L": med("neutrophils"), "NLR": med("nlr"),
-         "Missing values, % of predictor cells": f"{100 * x[[c for c in FEATURES if c in x.columns]].isna().mean().mean():.1f}"}
+         # missing data by node/area (TRIPOD+AI 11, TRIPOD-Cluster 10b): share of empty cells, complete records, worst predictor
+         "Missing values, % of predictor cells": f"{100 * miss.mean():.1f}",
+         "Patients with all 33 predictors": f"{int(x[feats].notna().all(axis=1).sum())} ({100 * x[feats].notna().all(axis=1).mean():.1f}%)" if n_pred else "",
+         "Predictor with most missing values": f"{flabel(miss.idxmax())} ({100 * miss.max():.0f}%)" if n_pred and miss.max() > 0 else "none"}
     return s
 
 
