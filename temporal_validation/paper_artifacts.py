@@ -331,7 +331,7 @@ def fig1_design(w: Writer, nodes: dict, cohort: pd.DataFrame, centres: pd.DataFr
              "paired bootstrap differences: federated vs pooled, 10 vs 33 features, node alone vs federated (own area, whole cohort)",
              "feature-ranking agreement pooled / federated / nodes; SHAP agreement"]
     for i, t in enumerate(items):
-        ax.text(6, 48 - 9 * i, "â¢ " + t, fontsize=8, va="center", wrap=True)
+        ax.text(6, 48 - 9 * i, "• " + t, fontsize=8, va="center", wrap=True)
     fig.tight_layout()
     w.figure(fig, "Fig1_framework_and_design", "Framework and study design. The patient flow of both cohorts is printed in panels b and c. (a) The stages of the federated pipeline: data quality checks, "
              "federated imputation, federated feature selection (summed site-stratified Cox score statistics), hyper-parameter tuning with a "
