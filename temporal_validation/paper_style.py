@@ -15,6 +15,10 @@ import re
 import textwrap
 from pathlib import Path
 
+# printed widths (inches): full page width of the manuscript and of the Supplementary (16.5 cm), half width
+FULL_WIDTH_IN = 6.5
+HALF_WIDTH_IN = 3.25
+
 _PANEL = re.compile(r"^\(([A-Za-z])\)\s*")
 _FAMILY = None
 
@@ -46,6 +50,11 @@ def setup_fonts() -> str:
         "ps.fonttype": 42,
         "svg.fonttype": "none",
         "axes.titleweight": "normal",
+        # figures are drawn at their printed size (FULL_WIDTH_IN wide), so these are the printed point sizes
+        "font.size": 7, "axes.labelsize": 7, "axes.titlesize": 7.5, "xtick.labelsize": 6.5, "ytick.labelsize": 6.5,
+        "legend.fontsize": 6.5, "legend.title_fontsize": 7, "figure.titlesize": 8, "axes.linewidth": 0.6,
+        "xtick.major.width": 0.6, "ytick.major.width": 0.6, "xtick.major.size": 2.5, "ytick.major.size": 2.5,
+        "lines.linewidth": 1.0, "lines.markersize": 4, "legend.frameon": False,
     })
     _FAMILY = family
     return family

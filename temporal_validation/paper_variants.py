@@ -9,9 +9,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from paper_artifacts import AREAS, AREA_LABEL, ARM_COLOR, FS_LABEL, MODEL_LABEL, Writer
+from paper_artifacts import AREAS, AREA_COLOR, AREA_LABEL, ARM_COLOR, FS_LABEL, MODEL_LABEL, Writer
 
-AREA_COLOR = {"americas": "#e6ab02", "asia": "#7570b3", "europe_non_italy": "#1b9e77", "italy_centre_south": "#d95f02", "italy_north": "#222222"}
 ROWS12 = [(m, f, i) for m in ("cox", "gradient", "rsf") for f in ("nofs", "score") for i in ("basic", "mice")]
 ROWS6 = [(m, f, "basic") for m in ("cox", "gradient", "rsf") for f in ("nofs", "score")]
 

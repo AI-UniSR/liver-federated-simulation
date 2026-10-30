@@ -29,6 +29,9 @@ AREA_LABEL = {"americas": "Americas", "asia": "Asia", "europe_non_italy": "Europ
 MODEL_LABEL = {"cox": "Cox", "gradient": "Gradient boosting", "rsf": "Random survival forest"}
 FS_LABEL = {"nofs": "33 features", "score": "10 features (score test)", "mi": "10 features (mutual information)"}
 ARM_COLOR = {"central": "#1f4e79", "federated": "#c0504d", "standalone": "#8c8c8c"}
+# Okabe-Ito colours for the five areas (colour-blind safe), used wherever areas are colour-coded
+AREA_COLOR = {"americas": "#E69F00", "asia": "#56B4E9", "europe_non_italy": "#009E73", "italy_centre_south": "#D55E00",
+              "italy_north": "#000000"}
 MAIN_MODEL = ("cox", "score", "basic")  # recommended parsimonious model
 # display names of the registry variables (paper vocabulary)
 FEATURE_LABEL = {
@@ -36,7 +39,7 @@ FEATURE_LABEL = {
     "stent or biliary draige": "Stent or biliary drainage", "lung mets": "Lung metastases", "lymph mets": "Lymph node metastases",
     "peri mets": "Peritoneal metastases", "liver mets": "Liver metastases", "bone mets": "Bone metastases", "other mets": "Other metastases",
     "number of met sites": "Number of metastatic sites", "locally advanced/metastatic": "Metastatic disease", "bmi": "BMI",
-    "ps ecog": "ECOG PS >= 1", "ca199": "CA19-9", "cea": "CEA", "neutrophils": "Neutrophils", "nlr": "NLR", "lymphocytes": "Lymphocytes",
+    "ps ecog": "ECOG PS ≥ 1", "ca199": "CA19-9", "cea": "CEA", "neutrophils": "Neutrophils", "nlr": "NLR", "lymphocytes": "Lymphocytes",
     "eosinophils": "Eosinophils", "basophils": "Basophils", "monocytes": "Monocytes", "albumin": "Albumin", "albumin bin": "Albumin (low)",
     "platelets": "Platelets", "bilirubin": "Bilirubin", "bilirubin bin": "Bilirubin (high)", "creatinine": "Creatinine", "astGOT": "AST",
     "altGPT": "ALT", "ggt": "GGT", "location - Intrahepatic": "Intrahepatic location",
@@ -328,7 +331,7 @@ def fig1_design(w: Writer, nodes: dict, cohort: pd.DataFrame, centres: pd.DataFr
              "paired bootstrap differences: federated vs pooled, 10 vs 33 features, node alone vs federated (own area, whole cohort)",
              "feature-ranking agreement pooled / federated / nodes; SHAP agreement"]
     for i, t in enumerate(items):
-        ax.text(6, 48 - 9 * i, "• " + t, fontsize=8, va="center", wrap=True)
+        ax.text(6, 48 - 9 * i, "â¢ " + t, fontsize=8, va="center", wrap=True)
     fig.tight_layout()
     w.figure(fig, "Fig1_framework_and_design", "Framework and study design. The patient flow of both cohorts is printed in panels b and c. (a) The stages of the federated pipeline: data quality checks, "
              "federated imputation, federated feature selection (summed site-stratified Cox score statistics), hyper-parameter tuning with a "
